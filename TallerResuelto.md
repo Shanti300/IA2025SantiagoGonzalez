@@ -99,7 +99,9 @@ if __name__ == "__main__":
 ## Ejercicio 2: Procesamiento de Entrada y Generación de Respuestas
 
 ```python
-def preprocesar_entrada(texto, tokenizador, longitud_maxima=512, dispositivo=None):
+import torch
+
+def preprocesar_entrada(texto, tokenizador, longitud_maxima=512):
     """
     Preprocesa el texto de entrada para pasarlo al modelo.
     
@@ -107,23 +109,28 @@ def preprocesar_entrada(texto, tokenizador, longitud_maxima=512, dispositivo=Non
         texto (str): Texto de entrada del usuario
         tokenizador: Tokenizador del modelo
         longitud_maxima (int): Longitud máxima de la secuencia
-        dispositivo: Dispositivo donde se ejecutará el modelo
     
     Returns:
         torch.Tensor: Tensor de entrada para el modelo
     """
-    # Tokenizar la entrada
+    # Añadir tokens especiales si son necesarios
+    # Algunos modelos requieren tokens especiales como [BOS], [SEP], etc.
+    if hasattr(tokenizador, 'bos_token') and tokenizador.bos_token:
+        texto = tokenizador.bos_token + texto
+    
+    # Tokenizar el texto
     tokens = tokenizador(
         texto,
-        return_tensors="pt",
-        padding=True,
+        max_length=longitud_maxima,
+        padding='max_length',
         truncation=True,
-        max_length=longitud_maxima
+        return_tensors='pt'  # PyTorch tensors
     )
     
-    # Pasar al dispositivo correspondiente si se proporciona
-    if dispositivo:
-        tokens = {k: v.to(dispositivo) for k, v in tokens.items()}
+    # Pasar al dispositivo correspondiente (GPU si está disponible)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    for key in tokens:
+        tokens[key] = tokens[key].to(device)
     
     return tokens
 
@@ -140,33 +147,42 @@ def generar_respuesta(modelo, entrada_procesada, tokenizador, parametros_generac
     Returns:
         str: Respuesta generada
     """
-    # Valores por defecto para parámetros de generación
+    # Configurar parámetros por defecto para la generación
     if parametros_generacion is None:
+        # Usar max_new_tokens en lugar de max_length para evitar conflictos con la longitud de entrada
         parametros_generacion = {
-            "max_new_tokens": 256,       # Máximo de tokens nuevos a generar
-            "temperature": 0.7,          # Control de aleatoriedad (0.0-1.0)
-            "top_p": 0.9,                # Muestreo de núcleo (nucleus sampling)
-            "do_sample": True,           # Usar muestreo estocástico
-            "repetition_penalty": 1.2,   # Penalización por repetición
-            "num_beams": 1,              # Usar búsqueda codiciosa (greedy)
-            "early_stopping": True       # Detener generación temprana
+            'max_new_tokens': 150,  # Genera hasta 150 nuevos tokens después de la entrada
+            'min_length': entrada_procesada['input_ids'].shape[1] + 20,  # Asegura al menos 20 tokens nuevos
+            'temperature': 0.7,
+            'top_p': 0.9,
+            'top_k': 50,
+            'no_repeat_ngram_size': 2,
+            'num_beams': 3,
+            'do_sample': True,
+            'early_stopping': True,
+            'pad_token_id': tokenizador.pad_token_id if hasattr(tokenizador, 'pad_token_id') else tokenizador.eos_token_id,
+            'eos_token_id': tokenizador.eos_token_id
         }
     
-    # Generar respuesta con los parámetros especificados
-    with torch.no_grad():
-        salida = modelo.generate(
-            **entrada_procesada,
+    # Generar texto usando el modelo
+    with torch.no_grad():  # Desactivar cálculo de gradientes para inferencia
+        salida_ids = modelo.generate(
+            input_ids=entrada_procesada['input_ids'],
+            attention_mask=entrada_procesada.get('attention_mask', None),
             **parametros_generacion
         )
     
-    # Decodificar la salida
-    respuesta_completa = tokenizador.decode(salida[0], skip_special_tokens=True)
+    # Decodificar la salida y limpiar la respuesta
+    respuesta_cruda = tokenizador.decode(salida_ids[0], skip_special_tokens=True)
     
-    # Extraer solo la respuesta (eliminar el prompt original)
-    prompt_original = tokenizador.decode(entrada_procesada['input_ids'][0], skip_special_tokens=True)
-    respuesta = respuesta_completa[len(prompt_original):].strip()
+    # Limpiar la respuesta - Quitar el texto de entrada si está contenido en la respuesta
+    entrada_decodificada = tokenizador.decode(entrada_procesada['input_ids'][0], skip_special_tokens=True)
+    if respuesta_cruda.startswith(entrada_decodificada):
+        respuesta_limpia = respuesta_cruda[len(entrada_decodificada):].strip()
+    else:
+        respuesta_limpia = respuesta_cruda.strip()
     
-    return respuesta
+    return respuesta_limpia
 
 def crear_prompt_sistema(instrucciones):
     """
@@ -178,10 +194,79 @@ def crear_prompt_sistema(instrucciones):
     Returns:
         str: Prompt formateado
     """
-    # Crear un formato común para modelos de instrucción
-    prompt_sistema = f"""<s>[SYSTEM]
-{instrucciones}
-[/SYSTEM]
+    # Formatear el prompt de sistema
+    prompt_sistema = f"""
+    Instrucciones del sistema:
+    {instrucciones}
+    
+    A continuación, responde al usuario de manera coherente siguiendo las instrucciones anteriores.
+    ---
+    """
+    
+    return prompt_sistema.strip()
+
+def cargar_modelo(modelo_nombre):
+    """
+    Carga el modelo y el tokenizador.
+    
+    Args:
+        modelo_nombre (str): Nombre o ruta del modelo a cargar
+        
+    Returns:
+        tuple: (modelo, tokenizador)
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    
+    # Cargar el tokenizador y el modelo
+    tokenizador = AutoTokenizer.from_pretrained(modelo_nombre)
+    modelo = AutoModelForCausalLM.from_pretrained(modelo_nombre)
+    
+    # Si el tokenizador no tiene token de padding, añadirlo
+    if not hasattr(tokenizador, 'pad_token') or tokenizador.pad_token is None:
+        if hasattr(tokenizador, 'eos_token'):
+            tokenizador.pad_token = tokenizador.eos_token
+        else:
+            tokenizador.add_special_tokens({'pad_token': '[PAD]'})
+            modelo.resize_token_embeddings(len(tokenizador))
+    
+    # Mover modelo a GPU si está disponible
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    modelo.to(device)
+    
+    return modelo, tokenizador
+
+# Ejemplo de uso
+def interaccion_simple():
+    modelo, tokenizador = cargar_modelo("gpt2")  # Cambia por el modelo que uses
+    
+    # Crear un prompt de sistema para definir la personalidad del chatbot
+    instrucciones = """
+    Eres un asistente amable y servicial que proporciona información clara y precisa.
+    Responde de manera respetuosa y concisa a las preguntas del usuario.
+    Cuando no sepas la respuesta, indícalo honestamente en lugar de inventar información.
+    """
+    
+    prompt_sistema = crear_prompt_sistema(instrucciones)
+    
+    # Ejemplo de entrada del usuario
+    entrada_usuario = "¿Puedes explicarme cómo funciona la inteligencia artificial?"
+    
+    # Combinar el prompt del sistema con la entrada del usuario
+    entrada_completa = f"{prompt_sistema}\nUsuario: {entrada_usuario}\nAsistente:"
+    
+    # Procesar la entrada
+    entrada_procesada = preprocesar_entrada(entrada_completa, tokenizador, longitud_maxima=512)
+    
+    # Generar y mostrar la respuesta
+    respuesta = generar_respuesta(modelo, entrada_procesada, tokenizador)
+    print(f"Usuario: {entrada_usuario}")
+    print(f"Asistente: {respuesta}")
+    
+    return respuesta
+
+# Ejecutar el ejemplo si se ejecuta el script directamente
+if __name__ == "__main__":
+    interaccion_simple()
 
 """
     return prompt_sistema
