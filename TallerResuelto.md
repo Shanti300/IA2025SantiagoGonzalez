@@ -273,6 +273,121 @@ if __name__ == "__main__":
 ## Ejercicio 3: Manejo de Contexto Conversacional
 
 ```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+def cargar_modelo(modelo_id):
+    """
+    Carga el modelo y el tokenizador.
+    
+    Args:
+        modelo_id (str): Identificador del modelo en Hugging Face
+        
+    Returns:
+        tuple: (modelo, tokenizador)
+    """
+    # Cargar el tokenizador y el modelo
+    tokenizador = AutoTokenizer.from_pretrained(modelo_id)
+    modelo = AutoModelForCausalLM.from_pretrained(modelo_id)
+    
+    # Si el tokenizador no tiene token de padding, añadirlo
+    if not hasattr(tokenizador, 'pad_token') or tokenizador.pad_token is None:
+        if hasattr(tokenizador, 'eos_token'):
+            tokenizador.pad_token = tokenizador.eos_token
+        else:
+            tokenizador.add_special_tokens({'pad_token': '[PAD]'})
+            modelo.resize_token_embeddings(len(tokenizador))
+    
+    # Mover modelo a GPU si está disponible
+    dispositivo = verificar_dispositivo()
+    modelo.to(dispositivo)
+    
+    return modelo, tokenizador
+
+def verificar_dispositivo():
+    """
+    Verifica y devuelve el dispositivo disponible (GPU o CPU).
+    
+    Returns:
+        torch.device: Dispositivo a utilizar
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def preprocesar_entrada(texto, tokenizador, longitud_maxima=512):
+    """
+    Preprocesa el texto de entrada para pasarlo al modelo.
+    
+    Args:
+        texto (str): Texto de entrada
+        tokenizador: Tokenizador del modelo
+        longitud_maxima (int): Longitud máxima de la secuencia
+    
+    Returns:
+        torch.Tensor: Tensor de entrada para el modelo
+    """
+    # Tokenizar el texto
+    tokens = tokenizador(
+        texto,
+        padding=True,
+        truncation=True,
+        max_length=longitud_maxima,
+        return_tensors='pt'
+    )
+    
+    # Pasar al dispositivo correspondiente
+    dispositivo = verificar_dispositivo()
+    for key in tokens:
+        tokens[key] = tokens[key].to(dispositivo)
+    
+    return tokens
+
+def generar_respuesta(modelo, entrada_procesada, tokenizador, parametros_generacion=None):
+    """
+    Genera una respuesta basada en la entrada procesada.
+    
+    Args:
+        modelo: Modelo de lenguaje
+        entrada_procesada: Tokens de entrada procesados
+        tokenizador: Tokenizador del modelo
+        parametros_generacion (dict): Parámetros para controlar la generación
+        
+    Returns:
+        str: Respuesta generada
+    """
+    # Configurar parámetros por defecto para la generación
+    if parametros_generacion is None:
+        parametros_generacion = {
+            'max_new_tokens': 150,
+            'temperature': 0.7,
+            'top_p': 0.9,
+            'top_k': 50,
+            'no_repeat_ngram_size': 2,
+            'do_sample': True,
+            'early_stopping': True,
+            'pad_token_id': tokenizador.pad_token_id if hasattr(tokenizador, 'pad_token_id') else tokenizador.eos_token_id,
+            'eos_token_id': tokenizador.eos_token_id
+        }
+    
+    # Generar texto usando el modelo
+    with torch.no_grad():
+        salida_ids = modelo.generate(
+            input_ids=entrada_procesada['input_ids'],
+            attention_mask=entrada_procesada.get('attention_mask', None),
+            **parametros_generacion
+        )
+    
+    # Decodificar la salida y limpiar la respuesta
+    respuesta_cruda = tokenizador.decode(salida_ids[0], skip_special_tokens=True)
+    
+    # Limpiar la respuesta - Quitar el texto de entrada si está contenido en la respuesta
+    entrada_decodificada = tokenizador.decode(entrada_procesada['input_ids'][0], skip_special_tokens=True)
+    if respuesta_cruda.startswith(entrada_decodificada):
+        respuesta_limpia = respuesta_cruda[len(entrada_decodificada):].strip()
+    else:
+        respuesta_limpia = respuesta_cruda.strip()
+    
+    return respuesta_limpia
+
 class GestorContexto:
     """
     Clase para gestionar el contexto de una conversación con el chatbot.
@@ -301,14 +416,19 @@ class GestorContexto:
         Returns:
             str: Mensaje formateado
         """
-        if rol == "sistema":
-            return f"<s>[SYSTEM]\n{contenido}\n[/SYSTEM]\n\n"
-        elif rol == "usuario":
-            return f"[USER] {contenido} [/USER]\n"
-        elif rol == "asistente":
-            return f"[ASSISTANT] {contenido} [/ASSISTANT]\n"
-        else:
-            return f"[{rol.upper()}] {contenido} [{rol.upper()}]\n"
+        prefijos = {
+            'sistema': '### Instrucciones:\n',
+            'usuario': '### Usuario:\n',
+            'asistente': '### Asistente:\n'
+        }
+        
+        # Asegurar que el rol existe en los prefijos
+        if rol not in prefijos:
+            raise ValueError(f"Rol '{rol}' no válido. Debe ser 'sistema', 'usuario' o 'asistente'")
+        
+        # Formatear el mensaje con el prefijo adecuado
+        mensaje_formateado = f"{prefijos[rol]}{contenido}\n"
+        return mensaje_formateado
     
     def agregar_mensaje(self, rol, contenido):
         """
@@ -318,8 +438,15 @@ class GestorContexto:
             rol (str): 'sistema', 'usuario' o 'asistente'
             contenido (str): Contenido del mensaje
         """
+        # Formatear el mensaje con el formato establecido
         mensaje_formateado = self.formato_mensaje(rol, contenido)
-        self.historial.append({"rol": rol, "contenido": contenido, "formateado": mensaje_formateado})
+        
+        # Guardar tanto el mensaje formateado como los metadatos
+        self.historial.append({
+            'rol': rol,
+            'contenido': contenido,
+            'mensaje_formateado': mensaje_formateado
+        })
     
     def construir_prompt_completo(self):
         """
@@ -328,7 +455,16 @@ class GestorContexto:
         Returns:
             str: Prompt completo para el modelo
         """
-        return "".join([m["formateado"] for m in self.historial]) + "[ASSISTANT] "
+        # Combinar todos los mensajes formateados en un solo prompt
+        prompt_completo = ""
+        
+        for mensaje in self.historial:
+            prompt_completo += mensaje['mensaje_formateado']
+        
+        # Añadir un separador para la próxima respuesta del asistente
+        prompt_completo += "### Asistente:\n"
+        
+        return prompt_completo
     
     def truncar_historial(self, tokenizador):
         """
@@ -337,30 +473,38 @@ class GestorContexto:
         Args:
             tokenizador: Tokenizador del modelo
         """
-        # Preservar siempre el mensaje del sistema
-        sistema_msgs = [msg for msg in self.historial if msg["rol"] == "sistema"]
-        otros_msgs = [msg for msg in self.historial if msg["rol"] != "sistema"]
-        
-        # Verificar longitud actual
-        prompt_actual = self.construir_prompt_completo()
-        tokens_actuales = len(tokenizador.encode(prompt_actual))
-        
-        # Si la longitud es aceptable, no hacer nada
-        if tokens_actuales <= self.longitud_maxima:
+        # No hacer nada si no hay suficientes mensajes
+        if len(self.historial) <= 2:  # Mantener al menos el mensaje del sistema y el último del usuario
             return
         
-        # Calcular cuántos tokens debemos eliminar
-        tokens_a_eliminar = tokens_actuales - self.longitud_maxima + 100  # Margen de seguridad
+        # Construir el prompt actual
+        prompt_actual = self.construir_prompt_completo()
         
-        # Eliminar mensajes antiguos hasta cumplir con la longitud máxima
-        while tokens_a_eliminar > 0 and otros_msgs:
-            # Eliminar el mensaje más antiguo (excepto sistema)
-            mensaje_eliminado = otros_msgs.pop(0)
-            tokens_mensaje = len(tokenizador.encode(mensaje_eliminado["formateado"]))
-            tokens_a_eliminar -= tokens_mensaje
+        # Contar tokens
+        tokens = tokenizador(prompt_actual, return_length=True, add_special_tokens=True)
+        longitud_tokens = tokens['length'][0]
         
-        # Reconstruir el historial
-        self.historial = sistema_msgs + otros_msgs
+        # Si la longitud es menor que el máximo, no hacer nada
+        if longitud_tokens <= self.longitud_maxima:
+            return
+        
+        # Estrategia: Mantener siempre el mensaje del sistema (si existe) y los últimos 
+        # mensajes hasta cumplir con la longitud máxima
+        
+        # Verificar si el primer mensaje es del sistema
+        tiene_sistema = len(self.historial) > 0 and self.historial[0]['rol'] == 'sistema'
+        
+        # Comenzar eliminando mensajes antiguos (excepto el del sistema)
+        indice_inicio = 1 if tiene_sistema else 0
+        
+        while longitud_tokens > self.longitud_maxima and indice_inicio < len(self.historial) - 1:
+            # Eliminar el mensaje más antiguo (después del sistema y antes del último)
+            mensaje_eliminado = self.historial.pop(indice_inicio)
+            
+            # Reconstruir el prompt y calcular nuevamente la longitud
+            prompt_actual = self.construir_prompt_completo()
+            tokens = tokenizador(prompt_actual, return_length=True, add_special_tokens=True)
+            longitud_tokens = tokens['length'][0]
 
 # Clase principal del chatbot
 class Chatbot:
@@ -382,7 +526,7 @@ class Chatbot:
         
         # Inicializar el contexto con instrucciones del sistema
         if instrucciones_sistema:
-            self.gestor_contexto.agregar_mensaje("sistema", instrucciones_sistema)
+            self.gestor_contexto.agregar_mensaje('sistema', instrucciones_sistema)
     
     def responder(self, mensaje_usuario, parametros_generacion=None):
         """
@@ -396,32 +540,22 @@ class Chatbot:
             str: Respuesta del chatbot
         """
         # 1. Agregar mensaje del usuario al contexto
-        self.gestor_contexto.agregar_mensaje("usuario", mensaje_usuario)
+        self.gestor_contexto.agregar_mensaje('usuario', mensaje_usuario)
         
-        # 2. Construir el prompt completo
+        # 2. Truncar el historial si es necesario
+        self.gestor_contexto.truncar_historial(self.tokenizador)
+        
+        # 3. Construir el prompt completo
         prompt_completo = self.gestor_contexto.construir_prompt_completo()
         
-        # 3. Preprocesar la entrada
-        entrada_procesada = preprocesar_entrada(
-            prompt_completo, 
-            self.tokenizador, 
-            longitud_maxima=2048,
-            dispositivo=self.dispositivo
-        )
+        # 4. Preprocesar la entrada
+        entrada_procesada = preprocesar_entrada(prompt_completo, self.tokenizador)
         
-        # 4. Generar la respuesta
-        respuesta = generar_respuesta(
-            self.modelo, 
-            entrada_procesada, 
-            self.tokenizador, 
-            parametros_generacion
-        )
+        # 5. Generar la respuesta
+        respuesta = generar_respuesta(self.modelo, entrada_procesada, self.tokenizador, parametros_generacion)
         
-        # 5. Agregar respuesta al contexto
-        self.gestor_contexto.agregar_mensaje("asistente", respuesta)
-        
-        # 6. Truncar el historial si es necesario
-        self.gestor_contexto.truncar_historial(self.tokenizador)
+        # 6. Agregar respuesta al contexto
+        self.gestor_contexto.agregar_mensaje('asistente', respuesta)
         
         # 7. Devolver la respuesta
         return respuesta
@@ -429,25 +563,40 @@ class Chatbot:
 # Prueba del sistema
 def prueba_conversacion():
     # Crear una instancia del chatbot
-    chatbot = Chatbot(
-        "mistralai/Mistral-7B-Instruct-v0.2",
-        "Eres un asistente amable, servicial y conciso. Respondes con información precisa y útil."
-    )
+    instrucciones = """
+    Eres un asistente IA amable y servicial. Tu objetivo es proporcionar respuestas útiles,
+    informativas y éticas. Evita dar información falsa o engañosa. Si no sabes algo, admítelo
+    en lugar de inventar. Mantén un tono amigable y profesional.
+    """
+    
+    # Usar un modelo pequeño para pruebas, en producción debería usarse un modelo más potente
+    chatbot = Chatbot("gpt2", instrucciones_sistema=instrucciones)
     
     # Simular una conversación de varios turnos
-    preguntas = [
-        "¿Qué es la inteligencia artificial?",
-        "¿Cuáles son sus aplicaciones principales?",
-        "¿Y qué riesgos existen?",
+    conversacion = [
+        "Hola, ¿cómo estás?",
+        "¿Puedes explicarme qué es la inteligencia artificial?",
+        "Dame un ejemplo de aplicación de IA en la vida cotidiana",
+        "¿Estas aplicaciones tienen algún riesgo?",
         "Gracias por la información"
     ]
     
-    # Realizar la conversación
-    for pregunta in preguntas:
-        print(f"\nUsuario: {pregunta}")
-        respuesta = chatbot.responder(pregunta)
+    # Ejecutar la conversación
+    for mensaje in conversacion:
+        print(f"\nUsuario: {mensaje}")
+        respuesta = chatbot.responder(mensaje)
         print(f"Asistente: {respuesta}")
+    
+    return chatbot
+
+# Ejecutar el ejemplo si se ejecuta el script directamente
+if __name__ == "__main__":
+    prueba_conversacion()
 ```
+
+Dio una respuesta tal que asi:
+![image](https://github.com/user-attachments/assets/28c60337-8e9d-4e5d-ba98-2cea375a4284)
+
 
 ## Ejercicio 4: Optimización del Modelo para Recursos Limitados
 
