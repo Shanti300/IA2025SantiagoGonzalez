@@ -8,8 +8,7 @@
 - [Ejercicio 3: Manejo de Contexto Conversacional](#ejercicio-3-manejo-de-contexto-conversacional)
 - [Ejercicio 4: Optimización del Modelo para Recursos Limitados](#ejercicio-4-optimización-del-modelo-para-recursos-limitados)
 - [Ejercicio 5: Personalización del Chatbot y Despliegue](#ejercicio-5-personalización-del-chatbot-y-despliegue)
-- [Ejecución del Proyecto](#ejecución-del-proyecto)
-- [Requisitos y Dependencias](#requisitos-y-dependencias)
+- [Preguntas teoricas](#Preguntas-teoricas)
 
 ## Ejercicio 1: Configuración del Entorno y Carga de Modelo Base
 
@@ -812,7 +811,8 @@ if __name__ == "__main__":
 Para ejecutar el proyecto completo, sigue estos pasos:
 
 1. **¿Cuáles son las diferencias fundamentales entre los modelos encoder-only, decoder-only y encoder-decoder en el contexto de los chatbots conversacionales? Explique qué tipo de modelo sería más adecuado para cada caso de uso y por qué.**
- Los modelos de lenguaje se pueden clasificar en tres arquitecturas principales según su estructura:
+
+Los modelos de lenguaje se pueden clasificar en tres arquitecturas principales según su estructura:
 Los modelos encoder-only (como BERT) se especializan en comprender el contexto bidireccional del texto. Procesan todo el texto de entrada simultáneamente, permitiéndoles "ver" palabras tanto anteriores como posteriores. Esto los hace excelentes para tareas de comprensión del lenguaje como clasificación de texto, análisis de sentimiento, extracción de información y respuesta a preguntas sobre un texto específico.Sin embargo, no están diseñados para generar texto nuevo de forma autónoma.
 
 Los modelos decoder-only (como GPT) generan texto de manera autoregresiva, prediciendo el siguiente token basándose únicamente en los tokens anteriores. Esta arquitectura unidireccional los hace ideales para tareas generativas como completado de texto, chatbots conversacionales y cualquier aplicación donde se requiera producir texto coherente y contextual. Su capacidad de generar secuencias de manera fluida los convierte en la opción preferida para asistentes de IA conversacionales.
@@ -846,6 +846,7 @@ Para asistentes generales: un balance intermedio (0.5-0.7) suele funcionar bien
 En sistemas críticos: considerar implementar varios pases con diferentes temperaturas y un mecanismo de verificación
 
 3. **Describa las técnicas principales para reducir el problema de "alucinaciones" en chatbots basados en LLMs. ¿Qué estrategias podemos implementar a nivel de inferencia y a nivel de prompt engineering para mejorar la precisión factual de las respuestas?**
+
 Las alucinaciones ocurren cuando los LLMs generan información incorrecta pero presentada con confianza. Para reducirlas, podemos implementar:
 Estrategias a nivel de inferencia:
 
