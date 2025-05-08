@@ -1,7 +1,6 @@
 # Implementación y Optimización de Chatbot con Modelos de Lenguaje de Gran Escala (LLM)
-### Por Santiago González Olarte
+### Por Santiago González Olarte - Ing de sistemas Unilibre seccional Cali, 9 de mayo de 2025
 
-> Este repositorio contiene la implementación completa de un sistema de chatbot basado en Modelos de Lenguaje de Gran Escala (LLM), desarrollado como solución a los ejercicios propuestos en el curso avanzado de NLP.
 
 ## Tabla de Contenidos
 - [Ejercicio 1: Configuración del Entorno y Carga de Modelo Base](#ejercicio-1-configuración-del-entorno-y-carga-de-modelo-base)
@@ -808,65 +807,60 @@ if __name__ == "__main__":
     main_despliegue()
 ```
 
-## Ejecución del Proyecto
+## Preguntas teoricas
 
 Para ejecutar el proyecto completo, sigue estos pasos:
 
-1. **Configuración del entorno**: Primero asegúrate de tener todas las dependencias instaladas (ver sección de Requisitos).
+1. **¿Cuáles son las diferencias fundamentales entre los modelos encoder-only, decoder-only y encoder-decoder en el contexto de los chatbots conversacionales? Explique qué tipo de modelo sería más adecuado para cada caso de uso y por qué.**
+ Los modelos de lenguaje se pueden clasificar en tres arquitecturas principales según su estructura:
+Los modelos encoder-only (como BERT) se especializan en comprender el contexto bidireccional del texto. Procesan todo el texto de entrada simultáneamente, permitiéndoles "ver" palabras tanto anteriores como posteriores. Esto los hace excelentes para tareas de comprensión del lenguaje como clasificación de texto, análisis de sentimiento, extracción de información y respuesta a preguntas sobre un texto específico.Sin embargo, no están diseñados para generar texto nuevo de forma autónoma.
 
-2. **Ejecución del chatbot básico**:
-   ```bash
-   # Ejecutar la versión básica del chatbot
-   python chatbot_basic.py
-   ```
+Los modelos decoder-only (como GPT) generan texto de manera autoregresiva, prediciendo el siguiente token basándose únicamente en los tokens anteriores. Esta arquitectura unidireccional los hace ideales para tareas generativas como completado de texto, chatbots conversacionales y cualquier aplicación donde se requiera producir texto coherente y contextual. Su capacidad de generar secuencias de manera fluida los convierte en la opción preferida para asistentes de IA conversacionales.
 
-3. **Ejecución con optimizaciones**:
-   ```bash
-   # Ejecutar el demo de optimizaciones para comparar rendimiento
-   python chatbot_optimized.py --demo
-   ```
+Los modelos encoder-decoder (como T5 o BART) combinan ambas arquitecturas: un encoder procesa todo el texto de entrada bidireccional, y luego un decoder genera una salida basada en esa representación. Esta estructura los hace versátiles para tareas de transformación de texto como traducción, resumen, parafraseo y reformulación de consultas, donde hay una clara distinción entre entrada y salida.
+Para chatbots conversacionales, los modelos decoder-only suelen ser más adecuados porque:
 
-4. **Despliegue de la interfaz web**:
-   ```bash
-   # Lanzar la interfaz web con Gradio
-   python chatbot_web.py
-   ```
+Mantienen mejor el estado conversacional a lo largo de múltiples turnos
+Generan respuestas más naturales y coherentes
+Pueden producir texto variado sin limitarse a estructuras predefinidas
+Modelos como LLaMA, GPT-4 y Claude utilizan esta arquitectura por estas ventajas
 
-## Requisitos y Dependencias
+2. **Explique el concepto de "temperatura" en la generación de texto con LLMs. ¿Cómo afecta al comportamiento del chatbot y qué consideraciones debemos tener al ajustar este parámetro para diferentes aplicaciones?**
 
-Para ejecutar este proyecto necesitarás las siguientes dependencias:
+La temperatura es un hiperparámetro que controla la aleatoriedad o determinismo en la generación de texto. Técnicamente, antes de seleccionar el siguiente token, el modelo aplica una distribución de probabilidad sobre todos los tokens posibles. La temperatura modifica esta distribución:
 
-```bash
-# Instalar dependencias principales
-pip install torch transformers accelerate bitsandbytes
+Temperatura baja (cerca de 0): Hace que el modelo elija consistentemente los tokens más probables, resultando en respuestas más deterministas, conservadoras y predecibles. El modelo tenderá a repetir patrones comunes y evitará respuestas creativas pero arriesgadas.
+Temperatura alta (0.7-1.0): Distribuye la probabilidad más uniformemente entre diversos tokens, produciendo respuestas más variadas, creativas e impredecibles. El modelo experimenta más, pero también aumenta el riesgo de incoherencias.
 
-# Para optimizaciones y PEFT
-pip install peft optimum
+La temperatura afecta directamente:
 
-# Para la interfaz web
-pip install gradio
-```
+La coherencia vs creatividad de las respuestas
+La diversidad del vocabulario utilizado
+La probabilidad de que el modelo "tome riesgos" en sus respuestas
 
-### Requisitos de Hardware Recomendados
+Consideraciones para ajustar la temperatura según la aplicación:
 
-- **GPU**: NVIDIA con al menos 8GB de VRAM para modelos de 7B parámetros con optimizaciones
-- **RAM**: Mínimo 16GB
-- **Almacenamiento**: Al menos 20GB libres para modelos y caché
+Para sistemas de asistencia técnica, documentación o aplicaciones médicas: usar temperatura baja (0.1-0.3) para maximizar precisión y consistencia
+Para escritura creativa, brainstorming o entretenimiento: usar temperatura media-alta (0.7-1.0)
+Para asistentes generales: un balance intermedio (0.5-0.7) suele funcionar bien
+En sistemas críticos: considerar implementar varios pases con diferentes temperaturas y un mecanismo de verificación
 
-### Configuración Opcional
+3. **Describa las técnicas principales para reducir el problema de "alucinaciones" en chatbots basados en LLMs. ¿Qué estrategias podemos implementar a nivel de inferencia y a nivel de prompt engineering para mejorar la precisión factual de las respuestas?**
+Las alucinaciones ocurren cuando los LLMs generan información incorrecta pero presentada con confianza. Para reducirlas, podemos implementar:
+Estrategias a nivel de inferencia:
 
-Si deseas utilizar modelos más grandes o mejorar el rendimiento:
+Retrieval-Augmented Generation (RAG): Complementar el conocimiento del modelo con información recuperada de fuentes verificables en tiempo real.
+Verificación factual automatizada: Implementar sistemas que comprueben declaraciones contra bases de conocimiento verificadas.
+Cadenas de pensamiento (Chain-of-Thought): Hacer que el modelo explique su razonamiento paso a paso antes de dar una respuesta final.
+Técnicas de consenso: Ejecutar múltiples inferencias con diferentes parámetros y buscar consistencia entre respuestas.
+Reducción de temperatura: Usar temperaturas más bajas cuando la precisión factual sea crítica.
+Post-procesamiento con modelos especializados: Usar modelos secundarios para verificar la salida del modelo principal.
 
-```bash
-# Para habilitar Flash Attention 2
-pip install flash-attn --no-build-isolation
+Estrategias a nivel de prompt engineering:
 
-# Para métricas avanzadas de rendimiento
-pip install psutil gputil
-```
-
-### Notas Adicionales
-
-- Los modelos se descargarán automáticamente la primera vez que ejecutes el código
-- Puedes modificar los paths de caché en el código según tus necesidades
-- Para entrenar adaptadores LoRA personalizados, necesitarás datos específicos para tu caso de uso
+Instrucciones explícitas de precisión: Incluir directivas como "proporciona solo información verificable" o "indica claramente cuando no estés seguro".
+Ejemplos few-shot: Demostrar en el prompt cómo manejar la incertidumbre adecuadamente.
+Prompts estructurados: Guiar al modelo para que separe hechos de opiniones y especulaciones.
+Técnica de reflexión: Pedir al modelo que evalúe su propia respuesta antes de finalizarla.
+Contextual grounding: Proporcionar contexto suficiente y relevante en el prompt.
+Instrucciones de citación: Pedir al modelo que mencione el origen de la información cuando sea posible.
