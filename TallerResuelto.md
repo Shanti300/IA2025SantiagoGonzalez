@@ -268,38 +268,6 @@ def interaccion_simple():
 if __name__ == "__main__":
     interaccion_simple()
 
-"""
-    return prompt_sistema
-
-# Ejemplo de uso
-def interaccion_simple():
-    dispositivo = verificar_dispositivo()
-    modelo, tokenizador = cargar_modelo("mistralai/Mistral-7B-Instruct-v0.2")
-    
-    # Crear un prompt de sistema para definir la personalidad del chatbot
-    instrucciones = "Eres un asistente amable y servicial que proporciona respuestas concisas y correctas."
-    prompt_sistema = crear_prompt_sistema(instrucciones)
-    
-    # Entrada del usuario de ejemplo
-    entrada_usuario = "¿Cuáles son los principales beneficios de la inteligencia artificial?"
-    
-    # Combinar el prompt del sistema con la entrada del usuario
-    prompt_completo = f"{prompt_sistema}[USER] {entrada_usuario} [/USER]\n[ASSISTANT]"
-    
-    # Procesar la entrada
-    entrada_procesada = preprocesar_entrada(prompt_completo, tokenizador, dispositivo=dispositivo)
-    
-    # Generar la respuesta
-    respuesta = generar_respuesta(
-        modelo, 
-        entrada_procesada, 
-        tokenizador,
-        {"max_new_tokens": 300, "temperature": 0.7}
-    )
-    
-    print(f"Prompt: {entrada_usuario}")
-    print(f"Respuesta: {respuesta}")
-
 ```
 
 ## Ejercicio 3: Manejo de Contexto Conversacional
