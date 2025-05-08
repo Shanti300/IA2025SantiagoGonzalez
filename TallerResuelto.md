@@ -17,9 +17,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 
-# Configurar las variables de entorno para la caché de modelos
-os.environ['TRANSFORMERS_CACHE'] = './models_cache'
-os.environ['HF_HOME'] = './huggingface'
+# Configuración de la caché de modelos
+os.environ['TRANSFORMERS_CACHE'] = './model_cache'
+
 
 def cargar_modelo(nombre_modelo):
     """
@@ -31,22 +31,17 @@ def cargar_modelo(nombre_modelo):
     Returns:
         tuple: (modelo, tokenizador)
     """
-    print(f"Cargando modelo: {nombre_modelo}")
-    
-    # Cargar tokenizador
+    print(f"Cargando el modelo '{nombre_modelo}'...")
     tokenizador = AutoTokenizer.from_pretrained(nombre_modelo)
-    
-    # Cargar modelo
-    modelo = AutoModelForCausalLM.from_pretrained(
-        nombre_modelo,
-        torch_dtype=torch.float16,  # Usar half-precision para optimizar memoria
-        device_map="auto"  # Gestionar automáticamente la distribución en dispositivos
-    )
-    
-    # Configurar el modelo para inferencia
-    modelo.eval()  # Establecer en modo evaluación
-    
+    modelo = AutoModelForCausalLM.from_pretrained(nombre_modelo)
+    modelo.eval()
+    if torch.cuda.is_available():
+        modelo = modelo.half().to('cuda')
+    else:
+        modelo = modelo.to('cpu')
+    print("Modelo cargado correctamente.")
     return modelo, tokenizador
+
 
 def verificar_dispositivo():
     """
@@ -55,49 +50,50 @@ def verificar_dispositivo():
     Returns:
         torch.device: Dispositivo a utilizar
     """
-    if torch.cuda.is_available():
-        dispositivo = torch.device("cuda")
-        print(f"GPU disponible: {torch.cuda.get_device_name(0)}")
-        print(f"Memoria GPU total: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-        print(f"Memoria GPU disponible: {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
-        print(f"CUDA Version: {torch.version.cuda}")
-    elif torch.backends.mps.is_available():
-        dispositivo = torch.device("mps")
-        print("Apple Silicon (MPS) disponible")
+    dispositivo = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if dispositivo.type == 'cuda':
+        print(f"Usando GPU: {torch.cuda.get_device_name(0)}")
     else:
-        dispositivo = torch.device("cpu")
-        print("Utilizando CPU")
-    
+        print("Usando CPU")
     return dispositivo
 
-# Función principal de prueba
+
+def generar_texto(modelo, tokenizador, prompt, max_length=50):
+    """
+    Genera texto utilizando el modelo y el prompt proporcionado.
+    
+    Args:
+        modelo: El modelo de lenguaje cargado.
+        tokenizador: El tokenizador correspondiente.
+        prompt (str): El texto de entrada para generar texto.
+        max_length (int): Longitud máxima del texto generado.
+    
+    Returns:
+        str: Texto generado.
+    """
+    inputs = tokenizador(prompt, return_tensors='pt').to(modelo.device)
+    outputs = modelo.generate(**inputs, max_length=max_length)
+    texto_generado = tokenizador.decode(outputs[0], skip_special_tokens=True)
+    return texto_generado
+
+
 def main():
     dispositivo = verificar_dispositivo()
     print(f"Utilizando dispositivo: {dispositivo}")
-    
-    # Cargar un modelo pequeño adecuado para chatbots
-    modelo_id = "mistralai/Mistral-7B-Instruct-v0.2"  # Alternativas: "gpt2", "facebook/opt-350m"
-    modelo, tokenizador = cargar_modelo(modelo_id)
-    
-    # Realizar una prueba simple de generación de texto
-    prompt = "Explica brevemente qué es un modelo de lenguaje:"
-    inputs = tokenizador(prompt, return_tensors="pt").to(dispositivo)
-    
-    with torch.no_grad():
-        outputs = modelo.generate(
-            **inputs,
-            max_length=200,
-            temperature=0.7,
-            do_sample=True
-        )
-    
-    respuesta = tokenizador.decode(outputs[0], skip_special_tokens=True)
-    print("\nPrueba de generación:")
-    print(f"Prompt: {prompt}")
-    print(f"Respuesta: {respuesta}")
+
+    nombre_modelo = 'gpt2'  # Puedes cambiarlo por otro modelo si deseas
+    modelo, tokenizador = cargar_modelo(nombre_modelo)
+
+    prompt = "Hola, ¿cómo estás?"
+    print("Generando texto...")
+    texto = generar_texto(modelo, tokenizador, prompt)
+    print("Texto generado:")
+    print(texto)
+
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ## Ejercicio 2: Procesamiento de Entrada y Generación de Respuestas
