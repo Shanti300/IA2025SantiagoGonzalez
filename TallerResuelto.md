@@ -601,11 +601,14 @@ Dio una respuesta tal que asi:
 ## Ejercicio 4: Optimización del Modelo para Recursos Limitados
 
 ```python
-from transformers import BitsAndBytesConfig
+from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
+import torch
 import torch.nn as nn
 import time
-import psutil
 import gc
+import psutil
+import os
+from typing import Dict, Tuple, Optional, List, Any
 
 def configurar_cuantizacion(bits=4):
     """
@@ -617,15 +620,13 @@ def configurar_cuantizacion(bits=4):
     Returns:
         BitsAndBytesConfig: Configuración de cuantización
     """
-    if bits not in [4, 8]:
-        raise ValueError("La cuantización solo admite 4 u 8 bits")
-    
+    # Implementación de la configuración de cuantización
     config_cuantizacion = BitsAndBytesConfig(
-        load_in_4bit=bits == 4,
-        load_in_8bit=bits == 8,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
+        load_in_4bit=(bits == 4),
+        load_in_8bit=(bits == 8),
+        bnb_4bit_compute_dtype=torch.float16 if bits == 4 else None,
+        bnb_4bit_use_double_quant=True if bits == 4 else False,
+        bnb_4bit_quant_type="nf4" if bits == 4 else None,  # "nf4" o "fp4"
     )
     
     return config_cuantizacion
@@ -649,43 +650,49 @@ def cargar_modelo_optimizado(nombre_modelo, optimizaciones=None):
             "flash_attention": True
         }
     
-    # Cargar tokenizador
-    tokenizador = AutoTokenizer.from_pretrained(nombre_modelo)
-    
-    # Configurar opciones de carga del modelo
-    model_kwargs = {}
+    # Configurar opciones de carga de modelo
+    kwargs = {}
     
     # Aplicar cuantización si está habilitada
     if optimizaciones.get("cuantizacion", False):
-        bits = optimizaciones.get("bits", 4)
-        config_cuant = configurar_cuantizacion(bits)
-        model_kwargs["quantization_config"] = config_cuant
+        config_cuantizacion = configurar_cuantizacion(optimizaciones.get("bits", 4))
+        kwargs.update({"quantization_config": config_cuantizacion})
     
-    # Configurar dtype
-    model_kwargs["torch_dtype"] = torch.float16
-    
-    # Configurar offload a CPU si está habilitado
+    # Configurar dispositivo y offload si se especifica
+    device_map = "auto"
     if optimizaciones.get("offload_cpu", False):
-        model_kwargs["device_map"] = "auto"
-        model_kwargs["offload_folder"] = "offload_folder"
+        kwargs.update({
+            "device_map": device_map,
+            "offload_folder": "offload_folder",
+        })
     else:
-        model_kwargs["device_map"] = "auto"
+        kwargs.update({"device_map": device_map})
     
-    # Activar Flash Attention 2 si está disponible y habilitado
+    # Aplicar Flash Attention 2 si está disponible y habilitado
     if optimizaciones.get("flash_attention", False):
-        model_kwargs["attn_implementation"] = "flash_attention_2"
+        kwargs.update({
+            "attn_implementation": "flash_attention_2" 
+            if torch.cuda.is_available() else "eager"
+        })
     
     # Cargar el modelo con las optimizaciones configuradas
-    print(f"Cargando modelo optimizado: {nombre_modelo}")
-    print(f"Optimizaciones aplicadas: {optimizaciones}")
-    
     modelo = AutoModelForCausalLM.from_pretrained(
         nombre_modelo,
-        **model_kwargs
+        torch_dtype=torch.float16,
+        trust_remote_code=True,
+        **kwargs
     )
     
-    # Establecer en modo evaluación
-    modelo.eval()
+    # Cargar el tokenizador
+    tokenizador = AutoTokenizer.from_pretrained(
+        nombre_modelo,
+        trust_remote_code=True,
+        padding_side="left"
+    )
+    
+    # Asegurar que el tokenizador tenga un token de padding
+    if tokenizador.pad_token is None:
+        tokenizador.pad_token = tokenizador.eos_token
     
     return modelo, tokenizador
 
@@ -697,17 +704,37 @@ def aplicar_sliding_window(modelo, window_size=1024):
         modelo: Modelo a configurar
         window_size (int): Tamaño de la ventana de atención
     """
-    # Buscar las configuraciones de atención en el modelo
-    for nombre, modulo in modelo.named_modules():
-        # Buscar módulos de atención en el modelo
-        if "attention" in nombre.lower() and hasattr(modulo, "window_size"):
-            print(f"Configurando sliding window en {nombre}")
-            modulo.window_size = window_size
-    
-    # Alternativamente, configurar a nivel global si el modelo lo soporta
+    # Configurar sliding window attention en el modelo
     if hasattr(modelo.config, "sliding_window"):
+        # Establecer el tamaño de la ventana deslizante
         modelo.config.sliding_window = window_size
-        print(f"Configurado sliding window global con tamaño {window_size}")
+        print(f"Sliding window configurado a {window_size} tokens")
+    elif hasattr(modelo.config, "attention_window"):
+        # Alternativa para modelos que usan attention_window
+        modelo.config.attention_window = window_size
+        print(f"Attention window configurado a {window_size} tokens")
+    else:
+        print("Este modelo no soporta directamente sliding window attention")
+    
+    return modelo
+
+def obtener_memoria_utilizada():
+    """
+    Obtiene el uso actual de memoria en MB.
+    
+    Returns:
+        float: Memoria utilizada en MB
+    """
+    if torch.cuda.is_available():
+        # Obtener memoria GPU
+        torch.cuda.synchronize()
+        memoria_asignada = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        return memoria_asignada
+    else:
+        # Obtener memoria RAM si no hay GPU
+        proceso = psutil.Process(os.getpid())
+        memoria_mb = proceso.memory_info().rss / (1024 * 1024)
+        return memoria_mb
 
 def evaluar_rendimiento(modelo, tokenizador, texto_prueba, dispositivo):
     """
@@ -722,120 +749,181 @@ def evaluar_rendimiento(modelo, tokenizador, texto_prueba, dispositivo):
     Returns:
         dict: Métricas de rendimiento
     """
-    # Recoger basura y liberar memoria antes de la prueba
-    gc.collect()
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-    
-    # Preparar la entrada
-    tokens = tokenizador(texto_prueba, return_tensors="pt").to(dispositivo)
-    num_tokens_entrada = tokens.input_ids.shape[1]
-    
-    # Medir uso de memoria antes
+    # Limpiar caché de memoria antes de la evaluación
     if torch.cuda.is_available():
-        memoria_antes = torch.cuda.memory_allocated() / 1024**2  # MB
-    else:
-        memoria_antes = psutil.Process().memory_info().rss / 1024**2  # MB
+        torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Medir memoria inicial
+    memoria_inicial = obtener_memoria_utilizada()
+    
+    # Tokenizar el texto de prueba
+    inputs = tokenizador(texto_prueba, return_tensors="pt", padding=True).to(dispositivo)
+    input_tokens = len(inputs["input_ids"][0])
     
     # Medir tiempo de inferencia
     inicio = time.time()
     with torch.no_grad():
-        salida = modelo.generate(
-            **tokens,
-            max_new_tokens=100,
-            temperature=0.7,
-            do_sample=True
-        )
+        # No queremos incluir la generación de tokens adicionales en esta evaluación
+        salida = modelo(**inputs)
     fin = time.time()
     
-    # Decodificar y contar tokens generados
-    texto_generado = tokenizador.decode(salida[0], skip_special_tokens=True)
-    num_tokens_generados = salida.shape[1] - num_tokens_entrada
-    tiempo_inferencia = fin - inicio
-    
-    # Medir memoria después
-    if torch.cuda.is_available():
-        memoria_despues = torch.cuda.memory_allocated() / 1024**2  # MB
-    else:
-        memoria_despues = psutil.Process().memory_info().rss / 1024**2  # MB
-    
     # Calcular métricas
+    tiempo_inferencia = fin - inicio
+    memoria_utilizada = obtener_memoria_utilizada() - memoria_inicial
+    tokens_por_segundo = input_tokens / tiempo_inferencia if tiempo_inferencia > 0 else 0
+    
     metricas = {
         "tiempo_inferencia_segundos": tiempo_inferencia,
-        "tokens_generados": num_tokens_generados,
-        "tokens_por_segundo": num_tokens_generados / tiempo_inferencia,
-        "memoria_usada_mb": memoria_despues - memoria_antes,
-        "memoria_total_mb": memoria_despues
+        "memoria_adicional_mb": memoria_utilizada,
+        "tokens_por_segundo": tokens_por_segundo,
+        "tokens_procesados": input_tokens
     }
     
     return metricas
 
-# Función de demostración
 def demo_optimizaciones():
-    # Texto para pruebas
-    texto_prueba = """
-    Los modelos de lenguaje de gran escala (LLMs) están transformando la inteligencia artificial.
-    Estos modelos ofrecen capacidades impresionantes en generación de texto, traducción,
-    resumen y muchas otras tareas. Sin embargo, también presentan desafíos importantes
-    en términos de recursos computacionales y energéticos.
-    
-    ¿Cuáles son las principales ventajas y desventajas de estos modelos?
     """
+    Demuestra y compara diferentes configuraciones de optimización.
     
-    dispositivo = verificar_dispositivo()
-    modelo_base = "mistralai/Mistral-7B-Instruct-v0.2"  # Modelo para pruebas
+    Returns:
+        Dict[str, Any]: Resultados comparativos de las optimizaciones
+    """
+    # Texto de prueba para evaluación de rendimiento
+    texto_prueba = """
+    En el ámbito de la inteligencia artificial y el procesamiento del lenguaje natural, 
+    los modelos de lenguaje han experimentado avances significativos en los últimos años.
+    Estos modelos, basados en arquitecturas transformer, han revolucionado tareas como
+    la traducción automática, la generación de texto, la clasificación de sentimientos
+    y muchas otras aplicaciones de PLN. Sin embargo, su despliegue en dispositivos con
+    recursos limitados presenta desafíos importantes que requieren técnicas de optimización
+    específicas para mantener un equilibrio entre rendimiento y eficiencia.
+    """ * 10  # Repetir para tener suficiente texto
     
-    # Configuraciones a probar
-    configuraciones = {
-        "base": {"cuantizacion": False, "flash_attention": False},
-        "cuant4": {"cuantizacion": True, "bits": 4, "flash_attention": False},
-        "sliding": {"cuantizacion": False, "flash_attention": False, "sliding_window": True},
-        "completo": {"cuantizacion": True, "bits": 4, "flash_attention": True, "sliding_window": True}
-    }
+    # Definir dispositivo
+    dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Usando dispositivo: {dispositivo}")
+    
+    # Nombre del modelo (usar un modelo más pequeño para pruebas en Colab)
+    nombre_modelo = "facebook/opt-350m"  # Cambiar según necesidades
     
     resultados = {}
     
-    # Probar cada configuración
-    for nombre, config in configuraciones.items():
-        print(f"\n{'='*50}")
-        print(f"Evaluando configuración: {nombre}")
-        print(f"{'='*50}")
-        
-        # Cargar modelo con la configuración específica
-        modelo, tokenizador = cargar_modelo_optimizado(modelo_base, config)
-        
-        # Aplicar sliding window si está habilitado
-        if config.get("sliding_window", False):
-            aplicar_sliding_window(modelo, window_size=512)
-        
-        # Evaluar rendimiento
-        metricas = evaluar_rendimiento(modelo, tokenizador, texto_prueba, dispositivo)
-        resultados[nombre] = metricas
-        
-        # Mostrar resultados
-        print(f"Tiempo de inferencia: {metricas['tiempo_inferencia_segundos']:.2f} segundos")
-        print(f"Tokens generados: {metricas['tokens_generados']}")
-        print(f"Velocidad: {metricas['tokens_por_segundo']:.2f} tokens/segundo")
-        print(f"Memoria utilizada: {metricas['memoria_usada_mb']:.2f} MB")
-        
-        # Liberar memoria
-        del modelo, tokenizador
-        gc.collect()
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    # 1. Modelo base sin optimizaciones
+    print("\n1. Cargando modelo base sin optimizaciones...")
+    modelo_base, tokenizador = cargar_modelo_optimizado(
+        nombre_modelo, 
+        optimizaciones={
+            "cuantizacion": False,
+            "flash_attention": False,
+            "offload_cpu": False
+        }
+    )
+    print("Evaluando rendimiento del modelo base...")
+    resultados["base"] = evaluar_rendimiento(modelo_base, tokenizador, texto_prueba, dispositivo)
+    del modelo_base
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
-    # Comparar resultados
-    print("\n\nComparación de configuraciones:")
-    print(f"{'Configuración':<10} | {'Tiempo (s)':<10} | {'Tokens/s':<10} | {'Memoria (MB)':<10}")
-    print(f"{'-'*50}")
+    # 2. Modelo con cuantización de 4 bits
+    print("\n2. Cargando modelo con cuantización de 4 bits...")
+    modelo_cuantizado, tokenizador = cargar_modelo_optimizado(
+        nombre_modelo, 
+        optimizaciones={
+            "cuantizacion": True,
+            "bits": 4,
+            "flash_attention": False,
+            "offload_cpu": False
+        }
+    )
+    print("Evaluando rendimiento del modelo cuantizado...")
+    resultados["cuantizado_4bits"] = evaluar_rendimiento(modelo_cuantizado, tokenizador, texto_prueba, dispositivo)
+    del modelo_cuantizado
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
-    for nombre, metricas in resultados.items():
-        print(f"{nombre:<10} | {metricas['tiempo_inferencia_segundos']:<10.2f} | {metricas['tokens_por_segundo']:<10.2f} | {metricas['memoria_usada_mb']:<10.2f}")
+    # 3. Modelo con sliding window attention
+    print("\n3. Cargando modelo con sliding window attention...")
+    modelo_sliding, tokenizador = cargar_modelo_optimizado(
+        nombre_modelo, 
+        optimizaciones={
+            "cuantizacion": False,
+            "flash_attention": False,
+            "offload_cpu": False
+        }
+    )
+    aplicar_sliding_window(modelo_sliding, window_size=512)
+    print("Evaluando rendimiento del modelo con sliding window...")
+    resultados["sliding_window"] = evaluar_rendimiento(modelo_sliding, tokenizador, texto_prueba, dispositivo)
+    del modelo_sliding
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # 4. Modelo con todas las optimizaciones
+    print("\n4. Cargando modelo con todas las optimizaciones...")
+    modelo_completo, tokenizador = cargar_modelo_optimizado(
+        nombre_modelo, 
+        optimizaciones={
+            "cuantizacion": True,
+            "bits": 4,
+            "flash_attention": True,
+            "offload_cpu": dispositivo == "cuda"  # Solo activar offload si hay GPU
+        }
+    )
+    aplicar_sliding_window(modelo_completo, window_size=512)
+    print("Evaluando rendimiento del modelo con todas las optimizaciones...")
+    resultados["optimizacion_completa"] = evaluar_rendimiento(modelo_completo, tokenizador, texto_prueba, dispositivo)
+    
+    # Mostrar comparación de resultados
+    print("\n=== COMPARACIÓN DE OPTIMIZACIONES ===")
+    print(f"{'Configuración':<25} {'Tiempo (s)':<12} {'Memoria (MB)':<12} {'Tokens/s':<12}")
+    print("-" * 70)
+    
+    for config, metricas in resultados.items():
+        print(f"{config:<25} {metricas['tiempo_inferencia_segundos']:<12.4f} {metricas['memoria_adicional_mb']:<12.2f} {metricas['tokens_por_segundo']:<12.2f}")
+    
+    # Calcular porcentajes de mejora respecto al modelo base
+    if "base" in resultados:
+        base_tiempo = resultados["base"]["tiempo_inferencia_segundos"]
+        base_memoria = resultados["base"]["memoria_adicional_mb"]
+        base_tokens_s = resultados["base"]["tokens_por_segundo"]
+        
+        print("\n=== MEJORAS RESPECTO AL MODELO BASE (%) ===")
+        print(f"{'Configuración':<25} {'Tiempo':<12} {'Memoria':<12} {'Velocidad':<12}")
+        print("-" * 70)
+        
+        for config, metricas in resultados.items():
+            if config != "base":
+                tiempo_mejora = ((base_tiempo - metricas["tiempo_inferencia_segundos"]) / base_tiempo) * 100
+                memoria_mejora = ((base_memoria - metricas["memoria_adicional_mb"]) / base_memoria) * 100
+                velocidad_mejora = ((metricas["tokens_por_segundo"] - base_tokens_s) / base_tokens_s) * 100
+                
+                print(f"{config:<25} {tiempo_mejora:<12.2f}% {memoria_mejora:<12.2f}% {velocidad_mejora:<12.2f}%")
+    
+    return resultados
+
+# Función principal para ejecutar la demostración
+if __name__ == "__main__":
+    print("Iniciando demostración de optimizaciones de modelo...")
+    try:
+        resultados = demo_optimizaciones()
+        print("\nDemostración completada exitosamente!")
+    except Exception as e:
+        print(f"Error en la demostración: {e}")
 ```
 
 ## Ejercicio 5: Personalización del Chatbot y Despliegue
 
 ```python
+!pip install transformers peft gradio bitsandbytes accelerate torch
 import gradio as gr
-from peft import LoraConfig, get_peft_model, TaskType
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
+import os
 
 def configurar_peft(modelo, r=8, lora_alpha=32):
     """
@@ -849,23 +937,21 @@ def configurar_peft(modelo, r=8, lora_alpha=32):
     Returns:
         modelo: Modelo adaptado para fine-tuning
     """
-    # Definir módulos a optimizar (principalmente layers de atención y MLP)
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    
-    # Crear configuración LoRA
-    lora_config = LoraConfig(
+    # Crear la configuración de LoRA
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
         r=r,
         lora_alpha=lora_alpha,
-        target_modules=target_modules,
         lora_dropout=0.1,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],  # Módulos comunes para modelos transformer
     )
     
     # Aplicar PEFT al modelo
-    modelo_peft = get_peft_model(modelo, lora_config)
-    print(f"Modelo PEFT configurado con rango {r} y alpha {lora_alpha}")
-    print(f"Parámetros entrenables: {modelo_peft.print_trainable_parameters()}")
+    modelo_peft = get_peft_model(modelo, peft_config)
+    
+    # Imprimir información sobre el modelo y los parámetros entrenables
+    modelo_peft.print_trainable_parameters()
     
     return modelo_peft
 
@@ -878,49 +964,158 @@ def guardar_modelo(modelo, tokenizador, ruta):
         tokenizador: Tokenizador del modelo
         ruta (str): Ruta donde guardar
     """
-    # Crear directorio si no existe
+    # Crear el directorio si no existe
     os.makedirs(ruta, exist_ok=True)
     
-    # Guardar modelo
+    # Guardar el modelo
     modelo.save_pretrained(ruta)
     
-    # Guardar tokenizador
+    # Guardar el tokenizador
     tokenizador.save_pretrained(ruta)
     
     print(f"Modelo y tokenizador guardados en: {ruta}")
 
-def cargar_modelo_personalizado(ruta):
+def cargar_modelo_personalizado(ruta, device="cuda" if torch.cuda.is_available() else "cpu"):
     """
     Carga un modelo personalizado desde una ruta específica.
     
     Args:
         ruta (str): Ruta del modelo
+        device (str): Dispositivo donde cargar el modelo
         
     Returns:
         tuple: (modelo, tokenizador)
     """
-    # Cargar tokenizador
+    # Configuración para cargar modelos grandes en memoria limitada
+    if device == "cuda":
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+    else:
+        quantization_config = None
+    
+    # Cargar el tokenizador
     tokenizador = AutoTokenizer.from_pretrained(ruta)
     
-    # Configurar opciones de carga
-    device_map = "auto"
-    if torch.cuda.is_available():
-        torch_dtype = torch.float16
+    # Cargar el modelo base
+    if os.path.exists(os.path.join(ruta, "adapter_config.json")):
+        # Es un modelo PEFT, necesitamos cargar el modelo base primero
+        base_model_name = None
+        with open(os.path.join(ruta, "adapter_config.json"), 'r') as f:
+            import json
+            config = json.load(f)
+            if 'base_model_name_or_path' in config:
+                base_model_name = config['base_model_name_or_path']
+        
+        if base_model_name:
+            # Cargar el modelo base
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                quantization_config=quantization_config,
+                device_map="auto" if device == "cuda" else None,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            )
+            
+            # Cargar el modelo PEFT
+            modelo = PeftModel.from_pretrained(base_model, ruta)
+        else:
+            raise ValueError("No se pudo determinar el modelo base del adaptador PEFT")
     else:
-        torch_dtype = torch.float32
+        # Es un modelo completo
+        modelo = AutoModelForCausalLM.from_pretrained(
+            ruta,
+            quantization_config=quantization_config,
+            device_map="auto" if device == "cuda" else None,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        )
     
-    # Cargar modelo
-    modelo = AutoModelForCausalLM.from_pretrained(
-        ruta,
-        device_map=device_map,
-        torch_dtype=torch_dtype
-    )
+    # Configuración del tokenizador
+    if tokenizador.pad_token is None:
+        tokenizador.pad_token = tokenizador.eos_token
     
-    # Establecer en modo evaluación
-    modelo.eval()
-    
-    print(f"Modelo personalizado cargado desde: {ruta}")
+    print(f"Modelo cargado en: {device}")
     return modelo, tokenizador
+
+class Chatbot:
+    def __init__(self, modelo, tokenizador, max_length=512):
+        self.modelo = modelo
+        self.tokenizador = tokenizador
+        self.max_length = max_length
+        self.history = []
+    
+    def generar_respuesta(self, mensaje, temperatura=0.7, top_p=0.9, top_k=50):
+        """
+        Genera una respuesta a partir del mensaje del usuario.
+        
+        Args:
+            mensaje (str): Mensaje del usuario
+            temperatura (float): Temperatura para la generación
+            top_p (float): Valor de top_p para la generación
+            top_k (int): Valor de top_k para la generación
+            
+        Returns:
+            str: Respuesta generada
+        """
+        # Preparar el contexto con el historial de conversación
+        prompt = self._prepare_prompt(mensaje)
+        
+        # Tokenizar
+        inputs = self.tokenizador(prompt, return_tensors="pt", padding=True, truncation=True)
+        input_ids = inputs["input_ids"].to(self.modelo.device)
+        attention_mask = inputs["attention_mask"].to(self.modelo.device)
+        
+        # Generar respuesta
+        with torch.no_grad():
+            output = self.modelo.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.max_length,
+                do_sample=True,
+                temperature=temperatura,
+                top_p=top_p,
+                top_k=top_k,
+                pad_token_id=self.tokenizador.pad_token_id,
+            )
+        
+        # Decodificar la respuesta
+        generated_text = self.tokenizador.decode(output[0][len(input_ids[0]):], skip_special_tokens=True)
+        
+        # Actualizar historial
+        self.history.append((mensaje, generated_text))
+        if len(self.history) > 10:  # Mantener solo las últimas 10 interacciones
+            self.history.pop(0)
+        
+        return generated_text
+    
+    def _prepare_prompt(self, mensaje):
+        """
+        Prepara el prompt completo con el historial de la conversación.
+        
+        Args:
+            mensaje (str): Mensaje actual del usuario
+            
+        Returns:
+            str: Prompt completo
+        """
+        # Template simple para la conversación
+        prompt = ""
+        
+        # Añadir historial
+        for user_msg, bot_msg in self.history:
+            prompt += f"Usuario: {user_msg}\nAsistente: {bot_msg}\n\n"
+        
+        # Añadir mensaje actual
+        prompt += f"Usuario: {mensaje}\nAsistente:"
+        
+        return prompt
+    
+    def reset_history(self):
+        """Reinicia el historial de conversación"""
+        self.history = []
+        return "Historial de conversación borrado."
 
 # Interfaz web simple con Gradio
 def crear_interfaz_web(chatbot):
@@ -933,76 +1128,194 @@ def crear_interfaz_web(chatbot):
     Returns:
         gr.Interface: Interfaz de Gradio
     """
-    # Historial de conversación para la interfaz
-    historial_chat = []
-    
     # Función de callback para procesar entradas
-    def responder(mensaje, history):
-        history.append((mensaje, ""))
-        respuesta = chatbot.responder(mensaje)
-        history[-1] = (mensaje, respuesta)
-        return "", history
+    def responder(mensaje, historia=None, temperatura=0.7, top_p=0.9, top_k=50):
+        if historia is None:
+            historia = []
+        
+        # Generar respuesta
+        respuesta = chatbot.generar_respuesta(mensaje, temperatura, top_p, top_k)
+        
+        # Actualizar la historia para la interfaz
+        historia.append((mensaje, respuesta))
+        
+        return "", historia
     
-    # Crear la interfaz con Gradio
-    interfaz = gr.ChatInterface(
-        fn=responder,
-        title="Chatbot con LLM",
-        description="Un chatbot inteligente basado en modelos de lenguaje de gran escala.",
-        examples=[
-            "¿Qué es la inteligencia artificial?",
-            "Explícame cómo funciona un transformador",
-            "¿Cuáles son las aplicaciones de los LLMs en la educación?"
-        ],
-        theme=gr.themes.Soft()
-    )
+    def reiniciar_chat():
+        mensaje = chatbot.reset_history()
+        return [], mensaje
     
+    # Definir los componentes de la interfaz
+    with gr.Blocks() as interfaz:
+        gr.Markdown("# Chatbot personalizado")
+        
+        with gr.Row():
+            with gr.Column(scale=4):
+                chatbot_component = gr.Chatbot(label="Conversación")
+                mensaje_usuario = gr.Textbox(
+                    placeholder="Escribe tu mensaje aquí...",
+                    label="Mensaje",
+                    lines=2
+                )
+                
+                with gr.Row():
+                    enviar_btn = gr.Button("Enviar", variant="primary")
+                    reiniciar_btn = gr.Button("Reiniciar conversación")
+            
+            with gr.Column(scale=1):
+                gr.Markdown("### Parámetros de generación")
+                temperatura = gr.Slider(
+                    minimum=0.1, maximum=1.0, value=0.7, step=0.1,
+                    label="Temperatura", info="Valores más altos = respuestas más creativas"
+                )
+                top_p = gr.Slider(
+                    minimum=0.1, maximum=1.0, value=0.9, step=0.1,
+                    label="Top-p", info="Filtrado por probabilidad acumulada"
+                )
+                top_k = gr.Slider(
+                    minimum=1, maximum=100, value=50, step=1,
+                    label="Top-k", info="Filtrado por rank"
+                )
+        
+        # Configurar eventos
+        enviar_btn.click(
+            responder,
+            inputs=[mensaje_usuario, chatbot_component, temperatura, top_p, top_k],
+            outputs=[mensaje_usuario, chatbot_component]
+        )
+        mensaje_usuario.submit(
+            responder,
+            inputs=[mensaje_usuario, chatbot_component, temperatura, top_p, top_k],
+            outputs=[mensaje_usuario, chatbot_component]
+        )
+        reiniciar_btn.click(reiniciar_chat, outputs=[chatbot_component, gr.Textbox(label="Estado")])
+        
     return interfaz
 
-# Función principal para el despliegue
-def main_despliegue():
+# Función para crear un modelo de ejemplo (usado solo para testing en caso de no tener uno fine-tuned)
+def crear_modelo_ejemplo():
     """
-    Función principal para desplegar el chatbot en una interfaz web.
+    Crea un modelo pequeño para pruebas.
+    
+    Returns:
+        tuple: (modelo, tokenizador)
     """
-    # Determinar ruta del modelo a cargar
-    modelo_path = "./modelo_personalizado"
-    modelo_base = "mistralai/Mistral-7B-Instruct-v0.2"
+    model_name = "facebook/opt-125m"  # Modelo pequeño para pruebas
     
-    # Verificar si existe un modelo personalizado guardado
-    if os.path.exists(modelo_path):
-        print("Cargando modelo personalizado...")
-        modelo, tokenizador = cargar_modelo_personalizado(modelo_path)
-    else:
-        print("No se encontró modelo personalizado. Cargando modelo base optimizado...")
-        # Cargar modelo base con optimizaciones
-        modelo, tokenizador = cargar_modelo_optimizado(modelo_base, {
-            "cuantizacion": True,
-            "bits": 4,
-            "flash_attention": True
-        })
+    tokenizador = AutoTokenizer.from_pretrained(model_name)
+    if tokenizador.pad_token is None:
+        tokenizador.pad_token = tokenizador.eos_token
     
-    # Crear instancia del chatbot
-    chatbot = Chatbot(
-        modelo_id=None,  # Ya tenemos el modelo cargado
-        instrucciones_sistema="Eres un asistente IA amable y servicial. Proporcionas respuestas precisas, informativas y útiles. Mantienes tus respuestas concisas cuando es posible, pero detalladas cuando sea necesario."
+    modelo = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto" if torch.cuda.is_available() else None,
     )
     
-    # Asignar modelo y tokenizador ya cargados
-    chatbot.modelo = modelo
-    chatbot.tokenizador = tokenizador
+    return modelo, tokenizador
+
+# Función principal para el despliegue
+def main_despliegue(model_path=None):
+    """
+    Función principal para el despliegue del chatbot.
+    
+    Args:
+        model_path (str, optional): Ruta al modelo personalizado.
+    """
+    # Cargar el modelo personalizado o crear uno de ejemplo
+    if model_path and os.path.exists(model_path):
+        print(f"Cargando modelo personalizado desde: {model_path}")
+        modelo, tokenizador = cargar_modelo_personalizado(model_path)
+    else:
+        print("Modelo personalizado no encontrado. Usando modelo de ejemplo para demonstración.")
+        modelo, tokenizador = crear_modelo_ejemplo()
+    
+    # Crear instancia del chatbot
+    chatbot = Chatbot(modelo, tokenizador)
     
     # Crear y lanzar la interfaz web
     interfaz = crear_interfaz_web(chatbot)
     
     # Configurar parámetros para el despliegue
     interfaz.launch(
-        server_name="0.0.0.0",  # Disponible en la red
-        server_port=7860,       # Puerto estándar de Gradio
-        share=True              # Crear enlace público temporal
+        share=True,  # Crear un enlace público (útil para Colab)
+        debug=True,
+        height=700,
     )
 
+# Función para entrenar un modelo en datos personalizados (ejemplo simplificado)
+def entrenar_modelo(modelo, tokenizador, dataset, output_dir, epochs=3, batch_size=4):
+    """
+    Entrena un modelo en un dataset personalizado.
+    
+    Args:
+        modelo: Modelo base con PEFT aplicado
+        tokenizador: Tokenizador del modelo
+        dataset: Dataset de entrenamiento
+        output_dir (str): Directorio para guardar el modelo
+        epochs (int): Número de épocas de entrenamiento
+        batch_size (int): Tamaño del batch
+        
+    Returns:
+        modelo: Modelo entrenado
+    """
+    from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
+    
+    # Configurar los argumentos de entrenamiento
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        save_steps=500,
+        save_total_limit=2,
+        logging_steps=100,
+        learning_rate=3e-4,
+        weight_decay=0.01,
+        fp16=torch.cuda.is_available(),
+        report_to="none",
+    )
+    
+    # Configurar el data collator
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizador,
+        mlm=False,  # No usamos masked language modeling para chatbots
+    )
+    
+    # Configurar el trainer
+    trainer = Trainer(
+        model=modelo,
+        args=training_args,
+        train_dataset=dataset,
+        data_collator=data_collator,
+    )
+    
+    # Entrenar el modelo
+    trainer.train()
+    
+    # Guardar el modelo
+    modelo.save_pretrained(output_dir)
+    tokenizador.save_pretrained(output_dir)
+    
+    return modelo
+
 if __name__ == "__main__":
+    # Ejemplo de cómo usar este script:
+    # 1. Cargar/crear un modelo y aplicar PEFT
+    # modelo_base, tokenizador = crear_modelo_ejemplo()
+    # modelo_peft = configurar_peft(modelo_base)
+    
+    # 2. Entrenar el modelo (necesitarías preparar tu dataset)
+    # entrenar_modelo(modelo_peft, tokenizador, dataset, "ruta_salida")
+    
+    # 3. Desplegar el modelo entrenado
+    # main_despliegue("ruta_modelo_personalizado")
+    
+    # Para ejemplo rápido, simplemente desplegar un modelo de ejemplo
     main_despliegue()
 ```
+
+Lo que se mostró al ejecutar en colab:
+![image](https://github.com/user-attachments/assets/b5b1b0af-8aaf-4692-9530-a7cc58ae297a)
+
 
 ## Preguntas teoricas
 
