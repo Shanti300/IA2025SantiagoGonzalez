@@ -594,8 +594,7 @@ if __name__ == "__main__":
     prueba_conversacion()
 ```
 
-Dio una respuesta tal que asi:
-![image](https://github.com/user-attachments/assets/28c60337-8e9d-4e5d-ba98-2cea375a4284)
+
 
 
 ## Ejercicio 4: Optimización del Modelo para Recursos Limitados
@@ -613,10 +612,10 @@ from typing import Dict, Tuple, Optional, List, Any
 def configurar_cuantizacion(bits=4):
     """
     Configura los parámetros para la cuantización del modelo.
-    
+
     Args:
         bits (int): Bits para cuantización (4 u 8)
-    
+
     Returns:
         BitsAndBytesConfig: Configuración de cuantización
     """
@@ -628,17 +627,17 @@ def configurar_cuantizacion(bits=4):
         bnb_4bit_use_double_quant=True if bits == 4 else False,
         bnb_4bit_quant_type="nf4" if bits == 4 else None,  # "nf4" o "fp4"
     )
-    
+
     return config_cuantizacion
 
 def cargar_modelo_optimizado(nombre_modelo, optimizaciones=None):
     """
     Carga un modelo con optimizaciones aplicadas.
-    
+
     Args:
         nombre_modelo (str): Identificador del modelo
         optimizaciones (dict): Diccionario con flags para las optimizaciones
-    
+
     Returns:
         tuple: (modelo, tokenizador)
     """
@@ -649,15 +648,15 @@ def cargar_modelo_optimizado(nombre_modelo, optimizaciones=None):
             "offload_cpu": False,
             "flash_attention": True
         }
-    
+
     # Configurar opciones de carga de modelo
     kwargs = {}
-    
+
     # Aplicar cuantización si está habilitada
     if optimizaciones.get("cuantizacion", False):
         config_cuantizacion = configurar_cuantizacion(optimizaciones.get("bits", 4))
         kwargs.update({"quantization_config": config_cuantizacion})
-    
+
     # Configurar dispositivo y offload si se especifica
     device_map = "auto"
     if optimizaciones.get("offload_cpu", False):
@@ -667,85 +666,97 @@ def cargar_modelo_optimizado(nombre_modelo, optimizaciones=None):
         })
     else:
         kwargs.update({"device_map": device_map})
-    
+
     # Aplicar Flash Attention 2 si está disponible y habilitado
-    if optimizaciones.get("flash_attention", False):
-        kwargs.update({
-            "attn_implementation": "flash_attention_2" 
-            if torch.cuda.is_available() else "eager"
-        })
-    
+    if optimizaciones.get("flash_attention", False) and torch.cuda.is_available():
+        kwargs.update({"attn_implementation": "flash_attention_2"})
+
     # Cargar el modelo con las optimizaciones configuradas
-    modelo = AutoModelForCausalLM.from_pretrained(
-        nombre_modelo,
-        torch_dtype=torch.float16,
-        trust_remote_code=True,
-        **kwargs
-    )
-    
+    try:
+        modelo = AutoModelForCausalLM.from_pretrained(
+            nombre_modelo,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            **kwargs
+        )
+    except Exception as e:
+        print(f"Error al cargar el modelo con optimizaciones: {e}")
+        print("Intentando cargar el modelo con configuración básica...")
+        modelo = AutoModelForCausalLM.from_pretrained(
+            nombre_modelo,
+            trust_remote_code=True
+        )
+
     # Cargar el tokenizador
     tokenizador = AutoTokenizer.from_pretrained(
         nombre_modelo,
         trust_remote_code=True,
         padding_side="left"
     )
-    
+
     # Asegurar que el tokenizador tenga un token de padding
     if tokenizador.pad_token is None:
         tokenizador.pad_token = tokenizador.eos_token
-    
+
     return modelo, tokenizador
 
 def aplicar_sliding_window(modelo, window_size=1024):
     """
     Configura la atención de ventana deslizante para procesar secuencias largas.
-    
+
     Args:
         modelo: Modelo a configurar
         window_size (int): Tamaño de la ventana de atención
     """
     # Configurar sliding window attention en el modelo
-    if hasattr(modelo.config, "sliding_window"):
-        # Establecer el tamaño de la ventana deslizante
-        modelo.config.sliding_window = window_size
-        print(f"Sliding window configurado a {window_size} tokens")
-    elif hasattr(modelo.config, "attention_window"):
-        # Alternativa para modelos que usan attention_window
-        modelo.config.attention_window = window_size
-        print(f"Attention window configurado a {window_size} tokens")
-    else:
-        print("Este modelo no soporta directamente sliding window attention")
-    
+    try:
+        if hasattr(modelo.config, "sliding_window"):
+            # Establecer el tamaño de la ventana deslizante
+            modelo.config.sliding_window = window_size
+            print(f"Sliding window configurado a {window_size} tokens")
+        elif hasattr(modelo.config, "attention_window"):
+            # Alternativa para modelos que usan attention_window
+            modelo.config.attention_window = window_size
+            print(f"Attention window configurado a {window_size} tokens")
+        else:
+            print("Este modelo no soporta directamente sliding window attention")
+    except Exception as e:
+        print(f"Error al configurar sliding window: {e}")
+
     return modelo
 
 def obtener_memoria_utilizada():
     """
     Obtiene el uso actual de memoria en MB.
-    
+
     Returns:
         float: Memoria utilizada en MB
     """
-    if torch.cuda.is_available():
-        # Obtener memoria GPU
-        torch.cuda.synchronize()
-        memoria_asignada = torch.cuda.max_memory_allocated() / (1024 * 1024)
-        return memoria_asignada
-    else:
-        # Obtener memoria RAM si no hay GPU
-        proceso = psutil.Process(os.getpid())
-        memoria_mb = proceso.memory_info().rss / (1024 * 1024)
-        return memoria_mb
+    try:
+        if torch.cuda.is_available():
+            # Obtener memoria GPU
+            torch.cuda.synchronize()
+            memoria_asignada = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            return memoria_asignada
+        else:
+            # Obtener memoria RAM si no hay GPU
+            proceso = psutil.Process(os.getpid())
+            memoria_mb = proceso.memory_info().rss / (1024 * 1024)
+            return memoria_mb
+    except Exception as e:
+        print(f"Error al obtener memoria: {e}")
+        return 0.0
 
 def evaluar_rendimiento(modelo, tokenizador, texto_prueba, dispositivo):
     """
     Evalúa el rendimiento del modelo en términos de velocidad y memoria.
-    
+
     Args:
         modelo: Modelo a evaluar
         tokenizador: Tokenizador del modelo
         texto_prueba (str): Texto para pruebas de rendimiento
         dispositivo: Dispositivo donde se ejecutará
-    
+
     Returns:
         dict: Métricas de rendimiento
     """
@@ -753,167 +764,219 @@ def evaluar_rendimiento(modelo, tokenizador, texto_prueba, dispositivo):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     gc.collect()
-    
+
     # Medir memoria inicial
     memoria_inicial = obtener_memoria_utilizada()
-    
+
     # Tokenizar el texto de prueba
-    inputs = tokenizador(texto_prueba, return_tensors="pt", padding=True).to(dispositivo)
-    input_tokens = len(inputs["input_ids"][0])
-    
-    # Medir tiempo de inferencia
-    inicio = time.time()
-    with torch.no_grad():
-        # No queremos incluir la generación de tokens adicionales en esta evaluación
-        salida = modelo(**inputs)
-    fin = time.time()
-    
-    # Calcular métricas
-    tiempo_inferencia = fin - inicio
-    memoria_utilizada = obtener_memoria_utilizada() - memoria_inicial
-    tokens_por_segundo = input_tokens / tiempo_inferencia if tiempo_inferencia > 0 else 0
-    
-    metricas = {
-        "tiempo_inferencia_segundos": tiempo_inferencia,
-        "memoria_adicional_mb": memoria_utilizada,
-        "tokens_por_segundo": tokens_por_segundo,
-        "tokens_procesados": input_tokens
-    }
-    
+    try:
+        inputs = tokenizador(texto_prueba, return_tensors="pt", truncation=True, max_length=512).to(dispositivo)
+        input_tokens = len(inputs["input_ids"][0])
+
+        # Medir tiempo de inferencia
+        inicio = time.time()
+        with torch.no_grad():
+            # No queremos incluir la generación de tokens adicionales en esta evaluación
+            salida = modelo(**inputs)
+        fin = time.time()
+
+        # Calcular métricas
+        tiempo_inferencia = fin - inicio
+        memoria_utilizada = obtener_memoria_utilizada() - memoria_inicial
+        tokens_por_segundo = input_tokens / tiempo_inferencia if tiempo_inferencia > 0 else 0
+
+        metricas = {
+            "tiempo_inferencia_segundos": tiempo_inferencia,
+            "memoria_adicional_mb": memoria_utilizada,
+            "tokens_por_segundo": tokens_por_segundo,
+            "tokens_procesados": input_tokens
+        }
+    except Exception as e:
+        print(f"Error durante la evaluación: {e}")
+        metricas = {
+            "tiempo_inferencia_segundos": 0,
+            "memoria_adicional_mb": 0,
+            "tokens_por_segundo": 0,
+            "tokens_procesados": 0,
+            "error": str(e)
+        }
+
     return metricas
 
-def demo_optimizaciones():
+def demo_optimizaciones(nombre_modelo="facebook/opt-125m"):
     """
     Demuestra y compara diferentes configuraciones de optimización.
-    
+
+    Args:
+        nombre_modelo (str): Nombre del modelo a utilizar (predeterminado a un modelo más pequeño)
+
     Returns:
         Dict[str, Any]: Resultados comparativos de las optimizaciones
     """
-    # Texto de prueba para evaluación de rendimiento
+    # Texto de prueba para evaluación de rendimiento (reducido para evitar problemas de memoria)
     texto_prueba = """
-    En el ámbito de la inteligencia artificial y el procesamiento del lenguaje natural, 
+    En el ámbito de la inteligencia artificial y el procesamiento del lenguaje natural,
     los modelos de lenguaje han experimentado avances significativos en los últimos años.
     Estos modelos, basados en arquitecturas transformer, han revolucionado tareas como
     la traducción automática, la generación de texto, la clasificación de sentimientos
-    y muchas otras aplicaciones de PLN. Sin embargo, su despliegue en dispositivos con
-    recursos limitados presenta desafíos importantes que requieren técnicas de optimización
-    específicas para mantener un equilibrio entre rendimiento y eficiencia.
-    """ * 10  # Repetir para tener suficiente texto
-    
+    y muchas otras aplicaciones de PLN.
+    """ * 5  # Reducido a 5 repeticiones para evitar problemas de memoria
+
     # Definir dispositivo
     dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Usando dispositivo: {dispositivo}")
     
-    # Nombre del modelo (usar un modelo más pequeño para pruebas en Colab)
-    nombre_modelo = "facebook/opt-350m"  # Cambiar según necesidades
-    
+    # Mostrar información sobre el dispositivo
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"Memoria GPU Total: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+    else:
+        print("No se detectó GPU. Usando CPU.")
+        
+    print(f"Modelo seleccionado: {nombre_modelo}")
+
     resultados = {}
+
+    # Intentaremos cargar diferentes configuraciones dentro de bloques try-except para evitar errores fatales
     
     # 1. Modelo base sin optimizaciones
     print("\n1. Cargando modelo base sin optimizaciones...")
-    modelo_base, tokenizador = cargar_modelo_optimizado(
-        nombre_modelo, 
-        optimizaciones={
-            "cuantizacion": False,
-            "flash_attention": False,
-            "offload_cpu": False
-        }
-    )
-    print("Evaluando rendimiento del modelo base...")
-    resultados["base"] = evaluar_rendimiento(modelo_base, tokenizador, texto_prueba, dispositivo)
-    del modelo_base
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
+    try:
+        modelo_base, tokenizador = cargar_modelo_optimizado(
+            nombre_modelo,
+            optimizaciones={
+                "cuantizacion": False,
+                "flash_attention": False,
+                "offload_cpu": False
+            }
+        )
+        print("Evaluando rendimiento del modelo base...")
+        resultados["base"] = evaluar_rendimiento(modelo_base, tokenizador, texto_prueba, dispositivo)
+        del modelo_base
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"Error en evaluación del modelo base: {e}")
+        resultados["base"] = {"error": str(e)}
+
     # 2. Modelo con cuantización de 4 bits
     print("\n2. Cargando modelo con cuantización de 4 bits...")
-    modelo_cuantizado, tokenizador = cargar_modelo_optimizado(
-        nombre_modelo, 
-        optimizaciones={
-            "cuantizacion": True,
-            "bits": 4,
-            "flash_attention": False,
-            "offload_cpu": False
-        }
-    )
-    print("Evaluando rendimiento del modelo cuantizado...")
-    resultados["cuantizado_4bits"] = evaluar_rendimiento(modelo_cuantizado, tokenizador, texto_prueba, dispositivo)
-    del modelo_cuantizado
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
+    try:
+        modelo_cuantizado, tokenizador = cargar_modelo_optimizado(
+            nombre_modelo,
+            optimizaciones={
+                "cuantizacion": True,
+                "bits": 4,
+                "flash_attention": False,
+                "offload_cpu": False
+            }
+        )
+        print("Evaluando rendimiento del modelo cuantizado...")
+        resultados["cuantizado_4bits"] = evaluar_rendimiento(modelo_cuantizado, tokenizador, texto_prueba, dispositivo)
+        del modelo_cuantizado
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"Error en evaluación del modelo cuantizado: {e}")
+        resultados["cuantizado_4bits"] = {"error": str(e)}
+
     # 3. Modelo con sliding window attention
     print("\n3. Cargando modelo con sliding window attention...")
-    modelo_sliding, tokenizador = cargar_modelo_optimizado(
-        nombre_modelo, 
-        optimizaciones={
-            "cuantizacion": False,
-            "flash_attention": False,
-            "offload_cpu": False
-        }
-    )
-    aplicar_sliding_window(modelo_sliding, window_size=512)
-    print("Evaluando rendimiento del modelo con sliding window...")
-    resultados["sliding_window"] = evaluar_rendimiento(modelo_sliding, tokenizador, texto_prueba, dispositivo)
-    del modelo_sliding
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
+    try:
+        modelo_sliding, tokenizador = cargar_modelo_optimizado(
+            nombre_modelo,
+            optimizaciones={
+                "cuantizacion": False,
+                "flash_attention": False,
+                "offload_cpu": False
+            }
+        )
+        aplicar_sliding_window(modelo_sliding, window_size=256)  # Ventana más pequeña para evitar problemas
+        print("Evaluando rendimiento del modelo con sliding window...")
+        resultados["sliding_window"] = evaluar_rendimiento(modelo_sliding, tokenizador, texto_prueba, dispositivo)
+        del modelo_sliding
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"Error en evaluación del modelo con sliding window: {e}")
+        resultados["sliding_window"] = {"error": str(e)}
+
     # 4. Modelo con todas las optimizaciones
     print("\n4. Cargando modelo con todas las optimizaciones...")
-    modelo_completo, tokenizador = cargar_modelo_optimizado(
-        nombre_modelo, 
-        optimizaciones={
-            "cuantizacion": True,
-            "bits": 4,
-            "flash_attention": True,
-            "offload_cpu": dispositivo == "cuda"  # Solo activar offload si hay GPU
-        }
-    )
-    aplicar_sliding_window(modelo_completo, window_size=512)
-    print("Evaluando rendimiento del modelo con todas las optimizaciones...")
-    resultados["optimizacion_completa"] = evaluar_rendimiento(modelo_completo, tokenizador, texto_prueba, dispositivo)
-    
-    # Mostrar comparación de resultados
+    try:
+        modelo_completo, tokenizador = cargar_modelo_optimizado(
+            nombre_modelo,
+            optimizaciones={
+                "cuantizacion": True,
+                "bits": 4,
+                "flash_attention": True,
+                "offload_cpu": dispositivo == "cuda"  # Solo activar offload si hay GPU
+            }
+        )
+        aplicar_sliding_window(modelo_completo, window_size=256)
+        print("Evaluando rendimiento del modelo con todas las optimizaciones...")
+        resultados["optimizacion_completa"] = evaluar_rendimiento(modelo_completo, tokenizador, texto_prueba, dispositivo)
+        del modelo_completo
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"Error en evaluación del modelo con todas las optimizaciones: {e}")
+        resultados["optimizacion_completa"] = {"error": str(e)}
+
+    # Mostrar resultados disponibles
     print("\n=== COMPARACIÓN DE OPTIMIZACIONES ===")
-    print(f"{'Configuración':<25} {'Tiempo (s)':<12} {'Memoria (MB)':<12} {'Tokens/s':<12}")
-    print("-" * 70)
-    
+    print(f"{'Configuración':<25} {'Tiempo (s)':<12} {'Memoria (MB)':<12} {'Tokens/s':<12} {'Estado':<12}")
+    print("-" * 80)
+
     for config, metricas in resultados.items():
-        print(f"{config:<25} {metricas['tiempo_inferencia_segundos']:<12.4f} {metricas['memoria_adicional_mb']:<12.2f} {metricas['tokens_por_segundo']:<12.2f}")
-    
-    # Calcular porcentajes de mejora respecto al modelo base
-    if "base" in resultados:
-        base_tiempo = resultados["base"]["tiempo_inferencia_segundos"]
-        base_memoria = resultados["base"]["memoria_adicional_mb"]
-        base_tokens_s = resultados["base"]["tokens_por_segundo"]
-        
-        print("\n=== MEJORAS RESPECTO AL MODELO BASE (%) ===")
-        print(f"{'Configuración':<25} {'Tiempo':<12} {'Memoria':<12} {'Velocidad':<12}")
-        print("-" * 70)
-        
-        for config, metricas in resultados.items():
-            if config != "base":
-                tiempo_mejora = ((base_tiempo - metricas["tiempo_inferencia_segundos"]) / base_tiempo) * 100
-                memoria_mejora = ((base_memoria - metricas["memoria_adicional_mb"]) / base_memoria) * 100
-                velocidad_mejora = ((metricas["tokens_por_segundo"] - base_tokens_s) / base_tokens_s) * 100
-                
-                print(f"{config:<25} {tiempo_mejora:<12.2f}% {memoria_mejora:<12.2f}% {velocidad_mejora:<12.2f}%")
-    
+        if "error" in metricas:
+            print(f"{config:<25} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'Error':<12}")
+        else:
+            print(f"{config:<25} {metricas.get('tiempo_inferencia_segundos', 0):<12.4f} {metricas.get('memoria_adicional_mb', 0):<12.2f} {metricas.get('tokens_por_segundo', 0):<12.2f} {'OK':<12}")
+
+    # Calcular porcentajes de mejora respecto al modelo base si es posible
+    if "base" in resultados and "error" not in resultados["base"]:
+        base_tiempo = resultados["base"].get("tiempo_inferencia_segundos", 0)
+        base_memoria = resultados["base"].get("memoria_adicional_mb", 0)
+        base_tokens_s = resultados["base"].get("tokens_por_segundo", 0)
+
+        if base_tiempo > 0 and base_memoria > 0 and base_tokens_s > 0:
+            print("\n=== MEJORAS RESPECTO AL MODELO BASE (%) ===")
+            print(f"{'Configuración':<25} {'Tiempo':<12} {'Memoria':<12} {'Velocidad':<12}")
+            print("-" * 70)
+
+            for config, metricas in resultados.items():
+                if config != "base" and "error" not in metricas:
+                    tiempo = metricas.get("tiempo_inferencia_segundos", 0)
+                    memoria = metricas.get("memoria_adicional_mb", 0)
+                    tokens_s = metricas.get("tokens_por_segundo", 0)
+                    
+                    if tiempo > 0 and memoria > 0 and tokens_s > 0:
+                        tiempo_mejora = ((base_tiempo - tiempo) / base_tiempo) * 100
+                        memoria_mejora = ((base_memoria - memoria) / base_memoria) * 100
+                        velocidad_mejora = ((tokens_s - base_tokens_s) / base_tokens_s) * 100
+
+                        print(f"{config:<25} {tiempo_mejora:<12.2f}% {memoria_mejora:<12.2f}% {velocidad_mejora:<12.2f}%")
+
     return resultados
 
 # Función principal para ejecutar la demostración
 if __name__ == "__main__":
     print("Iniciando demostración de optimizaciones de modelo...")
     try:
-        resultados = demo_optimizaciones()
+        # Usar un modelo más pequeño para entornos con recursos limitados
+        resultados = demo_optimizaciones(nombre_modelo="facebook/opt-125m")  # Modelo más pequeño que opt-350m
         print("\nDemostración completada exitosamente!")
     except Exception as e:
         print(f"Error en la demostración: {e}")
 ```
+Esto fue lo que se mostró
+![image](https://github.com/user-attachments/assets/493147f9-5faa-43a3-9079-26f0638fb43d)
+
 
 ## Ejercicio 5: Personalización del Chatbot y Despliegue
 
