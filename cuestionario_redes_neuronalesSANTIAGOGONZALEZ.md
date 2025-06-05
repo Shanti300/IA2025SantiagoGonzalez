@@ -41,6 +41,7 @@ La arquitectura típica de una CNN sigue un patrón específico donde cada capa 
 ---
 
 ## Pregunta 3 - Preprocesamiento de Datos
+![image](https://github.com/user-attachments/assets/5b9fe016-cad4-4a92-bdab-9c78521dac0e)
 
 ### a) Normalización de píxeles al rango [0, 1]
 
@@ -163,6 +164,8 @@ Escalamiento automático para casos de riesgo psicológico
 pythonfrom transformers import pipeline
 sentiment_pipeline = pipeline("sentiment-analysis", 
                             model="dccuchile/bert-base-spanish-wwm-uncased")
+                            
+
 **2. Embeddings Contextuales con Word2Vec/GloVe:**
 Word2Vec para dominio específico:
 
