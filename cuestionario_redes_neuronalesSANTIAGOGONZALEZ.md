@@ -9,7 +9,8 @@
 
 ## Pregunta 1 - Fundamentos de CNN
 
-Las redes neuronales convolucionales (CNN) son arquitecturas de deep learning diseñadas específicamente para procesar datos con estructura de grilla, como las imágenes. Su efectividad en reconocimiento de imágenes radica en su capacidad para detectar características visuales de manera jerárquica, desde bordes simples hasta objetos complejos.
+Las redes neuronales convolucionales (CNN) representan una evolución fundamental en el campo del deep learning, específicamente diseñadas para el procesamiento eficiente de datos con estructura espacial como imágenes, video y señales bidimensionales. Su arquitectura se inspira en el cortex visual de los mamíferos, donde las neuronas responden a estímulos en campos receptivos locales y superpuestos.
+Fundamento teórico: Las CNN explotan tres principios biológicos clave: conectividad local, compartición de pesos e invarianza equivariante. Esto las hace especialmente efectivas para reconocimiento de imágenes al capturar jerarquías de características desde elementos básicos (bordes, texturas) hasta representaciones complejas.
 
 **Tres características distintivas que las hacen superiores:**
 
@@ -24,6 +25,22 @@ Las redes neuronales convolucionales (CNN) son arquitecturas de deep learning di
 ## Pregunta 2 - Arquitectura y Componentes
 
 La arquitectura típica de una CNN sigue un patrón específico donde cada capa cumple una función crucial:
+Diagrama Conceptual de Arquitectura CNN
+Input Image (32x32x3)
+        ↓
+    Conv2D + ReLU (32 filters, 3x3) → (30x30x32)
+        ↓
+    MaxPooling2D (2x2) → (15x15x32)
+        ↓
+    Conv2D + ReLU (64 filters, 3x3) → (13x13x64)
+        ↓
+    MaxPooling2D (2x2) → (6x6x64)
+        ↓
+    Flatten → (2304,)
+        ↓
+    Dense + ReLU (128 units) → (128,)
+        ↓
+    Dense + Softmax (10 units) → (10,)
 
 **Conv2D (Capas Convolucionales):** Aplican filtros a la imagen de entrada para detectar características específicas. Cada filtro produce un mapa de características que resalta ciertos patrones como bordes, texturas o formas. Estas capas mantienen la información espacial de la imagen.
 
@@ -84,11 +101,27 @@ El formato one-hot convierte etiquetas categóricas en vectores binarios. Por ej
 **¿Qué es Transfer Learning?**
 Transfer learning es una técnica donde se utiliza un modelo pre-entrenado en un dataset grande como punto de partida para una nueva tarea. En lugar de entrenar desde cero, se aprovecha el conocimiento ya adquirido.
 
-**Ventajas principales:**
-- Reduce significativamente el tiempo de entrenamiento
-- Requiere menos datos para obtener buenos resultados
-- Aprovecha características generales ya aprendidas
-- Mejora el rendimiento especialmente con datasets pequeños
+**Ventajas Fundamentales del Transfer Learning**
+
+Eficiencia computacional:
+
+Reducción de tiempo de entrenamiento: 10x-100x menos épocas
+Menor consumo energético y recursos de GPU
+Viabilidad en hardware limitado
+
+
+Eficiencia de datos:
+
+Efectivo con datasets pequeños (1000-10000 muestras)
+Reduce overfitting en escenarios data-scarce
+Aprovecha billones de parámetros pre-entrenados
+
+
+Mejor inicialización:
+
+Evita el problema de gradientes desvanecientes
+Inicia desde representaciones semánticamente significativas
+Convergencia más rápida y estable
 
 **¿Por qué MobileNetV2?**
 MobileNetV2 fue elegido porque:
@@ -128,12 +161,75 @@ Esto permite identificar intenciones como saludos, preguntas sobre tareas, o sol
 
 ### c) Tres técnicas de mejora 
 
-**1. Análisis de sentimientos:** Implementar modelos que detecten emociones en el texto para proporcionar respuestas más empáticas y contextualmente apropiadas.
+1. Análisis de Sentimientos Multimodal:
+Implementación técnica:
 
-**2. Embeddings de palabras:** Usar Word2Vec o GloVe para capturar relaciones semánticas entre palabras, mejorando la comprensión del contexto.
+Modelo base: Fine-tuned BERT para español (BETO, dccuchile/bert-base-spanish-wwm-uncased)
+Pipeline: Tokenización → BERT embeddings → Classifier head → Sentiment scores
+Output: [Positivo, Neutro, Negativo] + intensidad emocional
 
-**3. Modelos de atención:** Incorporar mecanismos transformer para entender mejor las dependencias a largo plazo en las conversaciones.
+Beneficios específicos:
 
+Detección de sarcasmo e ironía mediante contexto
+Adaptación de respuestas según estado emocional
+Escalamiento automático para casos de riesgo psicológico
+
+pythonfrom transformers import pipeline
+sentiment_pipeline = pipeline("sentiment-analysis", 
+                            model="dccuchile/bert-base-spanish-wwm-uncased")
+2. Embeddings Contextuales con Word2Vec/GloVe:
+Word2Vec para dominio específico:
+
+Corpus: Textos académicos + conversaciones estudiantiles
+Arquitectura: Skip-gram con negative sampling
+Dimensiones: 300D para balance precisión-eficiencia
+Ventana contextual: 5 palabras para capturar contexto académico
+
+Aplicación práctica:
+python# Similitud semántica para intent matching
+def semantic_similarity(query, intent_examples):
+    query_vec = model.wv[preprocess(query)]
+    similarities = []
+    for example in intent_examples:
+        example_vec = model.wv[preprocess(example)]
+        sim = cosine_similarity(query_vec, example_vec)
+        similarities.append(sim)
+    return max(similarities)
+Beneficios:
+
+Captura sinónimos y variaciones no literales
+Manejo de términos específicos del dominio educativo
+Reducción de false negatives en classification
+
+3. Arquitectura Transformer con Mecanismos de Atención:
+Implementación con DistilBERT:
+
+Modelo: DistilBERT multilingual (más liviano que BERT completo)
+Fine-tuning: Dataset específico de conversaciones educativas
+Mecanismo de atención: Self-attention para dependencias a largo plazo
+
+Ventajas técnicas:
+
+Comprensión contextual: Entiende referencias anafóricas ("lo que me dijiste antes")
+Dependencias largas: Conecta información separada en la conversación
+Transfer learning: Aprovecha conocimiento de corpus masivos
+
+Arquitectura propuesta:
+Input: "No entiendo el tema de CNN que vimos ayer en clase"
+↓
+Tokenización + Posicional encoding
+↓
+Multi-head attention (8 heads)
+↓ 
+Feed-forward network
+↓
+Classification head → Intent: consulta_academica + Topic: CNN
+Innovación adicional - Sistema híbrido:
+Combinar los tres enfoques en ensemble:
+
+Reglas para casos claros y rápidos
+Word2Vec para similitud semántica
+Transformer para casos complejos y contextuales
 ---
 
 ## Pregunta 7 - Integración de Sistemas
