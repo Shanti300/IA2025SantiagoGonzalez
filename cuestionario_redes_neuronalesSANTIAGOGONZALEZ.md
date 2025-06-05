@@ -84,6 +84,7 @@ El formato one-hot convierte etiquetas categóricas en vectores binarios. Por ej
 ---
 
 ## Pregunta 5 - Transfer Learning
+![image](https://github.com/user-attachments/assets/c02071d9-d92d-4f75-bfa6-e10abb35c71c)
 
 **¿Qué es Transfer Learning?**
 Transfer learning es una técnica donde se utiliza un modelo pre-entrenado en un dataset grande como punto de partida para una nueva tarea. En lugar de entrenar desde cero, se aprovecha el conocimiento ya adquirido.
