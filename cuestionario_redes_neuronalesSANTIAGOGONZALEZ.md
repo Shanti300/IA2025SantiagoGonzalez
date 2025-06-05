@@ -25,22 +25,8 @@ Fundamento teórico: Las CNN explotan tres principios biológicos clave: conecti
 ## Pregunta 2 - Arquitectura y Componentes
 
 La arquitectura típica de una CNN sigue un patrón específico donde cada capa cumple una función crucial:
-Diagrama Conceptual de Arquitectura CNN
-Input Image (32x32x3)
-        ↓
-    Conv2D + ReLU (32 filters, 3x3) → (30x30x32)
-        ↓
-    MaxPooling2D (2x2) → (15x15x32)
-        ↓
-    Conv2D + ReLU (64 filters, 3x3) → (13x13x64)
-        ↓
-    MaxPooling2D (2x2) → (6x6x64)
-        ↓
-    Flatten → (2304,)
-        ↓
-    Dense + ReLU (128 units) → (128,)
-        ↓
-    Dense + Softmax (10 units) → (10,)
+![image](https://github.com/user-attachments/assets/fb6ef27f-5a58-4b63-aa7d-d1f5390ae72d)
+
 
 **Conv2D (Capas Convolucionales):** Aplican filtros a la imagen de entrada para detectar características específicas. Cada filtro produce un mapa de características que resalta ciertos patrones como bordes, texturas o formas. Estas capas mantienen la información espacial de la imagen.
 
@@ -103,21 +89,21 @@ Transfer learning es una técnica donde se utiliza un modelo pre-entrenado en un
 
 **Ventajas Fundamentales del Transfer Learning**
 
-Eficiencia computacional:
+**Eficiencia computacional:**
 
 Reducción de tiempo de entrenamiento: 10x-100x menos épocas
 Menor consumo energético y recursos de GPU
 Viabilidad en hardware limitado
 
 
-Eficiencia de datos:
+**Eficiencia de datos:**
 
 Efectivo con datasets pequeños (1000-10000 muestras)
 Reduce overfitting en escenarios data-scarce
 Aprovecha billones de parámetros pre-entrenados
 
 
-Mejor inicialización:
+**Mejor inicialización:**
 
 Evita el problema de gradientes desvanecientes
 Inicia desde representaciones semánticamente significativas
@@ -161,7 +147,7 @@ Esto permite identificar intenciones como saludos, preguntas sobre tareas, o sol
 
 ### c) Tres técnicas de mejora 
 
-1. Análisis de Sentimientos Multimodal:
+**1. Análisis de Sentimientos Multimodal:**
 Implementación técnica:
 
 Modelo base: Fine-tuned BERT para español (BETO, dccuchile/bert-base-spanish-wwm-uncased)
@@ -177,7 +163,7 @@ Escalamiento automático para casos de riesgo psicológico
 pythonfrom transformers import pipeline
 sentiment_pipeline = pipeline("sentiment-analysis", 
                             model="dccuchile/bert-base-spanish-wwm-uncased")
-2. Embeddings Contextuales con Word2Vec/GloVe:
+**2. Embeddings Contextuales con Word2Vec/GloVe:**
 Word2Vec para dominio específico:
 
 Corpus: Textos académicos + conversaciones estudiantiles
@@ -201,7 +187,7 @@ Captura sinónimos y variaciones no literales
 Manejo de términos específicos del dominio educativo
 Reducción de false negatives en classification
 
-3. Arquitectura Transformer con Mecanismos de Atención:
+**3. Arquitectura Transformer con Mecanismos de Atención:**
 Implementación con DistilBERT:
 
 Modelo: DistilBERT multilingual (más liviano que BERT completo)
